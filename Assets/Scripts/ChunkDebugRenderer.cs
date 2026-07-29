@@ -18,8 +18,8 @@ namespace DefaultNamespace
         [SerializeField] private Color boundsColor = Color.white;
         
         [SerializeField] private bool drawCubeBounds;
-        [SerializeField] private Color cubeBoundsColor = Color.grey;
         [SerializeField] private bool cubeBoundsHiddenByGeometry = true;
+        [SerializeField] private Color cubeBoundsColor = Color.grey;
 
         private Chunk _chunk;
         private float _isoLevel;

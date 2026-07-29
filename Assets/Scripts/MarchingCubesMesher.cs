@@ -152,15 +152,7 @@ namespace DefaultNamespace
             float valueB,
             float isoLevel)
         {
-            float valueDelta = valueB - valueA;
-
-            // 0.000001f
-            if (Mathf.Abs(valueDelta) < 0.01f)
-            {
-                return (positionA + positionB) * 0.5f;
-            }
-
-            float t = Mathf.Clamp01((isoLevel - valueA) / valueDelta);
+            float t = (isoLevel - valueA) / (valueB - valueA);
             return Vector3.Lerp(positionA, positionB, t);
         }
 
