@@ -105,6 +105,7 @@ public class ChunkGenerator : MonoBehaviour
     [SerializeField, Min(1)] private float size;
     [SerializeField, Range(0f, 1f)] private float isoLevel = 0.5f;
     [SerializeField] private bool autoRegenerateInEditor = true;
+    [SerializeField] private bool interpolate = true;
     [SerializeField] private Material chunkMaterial;
 
     [Header("Noise")] [SerializeField] private int octaves = 2;
@@ -220,7 +221,7 @@ public class ChunkGenerator : MonoBehaviour
         EnsureChunkObject();
         EnsureMesh();
 
-        MarchingCubesMesher.Generate(_chunk, isoLevel, _mesh);
+        MarchingCubesMesher.Generate(_chunk, isoLevel, _mesh, interpolate);
         _meshFilter.sharedMesh = _mesh;
         _meshRenderer.sharedMaterial = chunkMaterial != null
             ? chunkMaterial

@@ -18,7 +18,7 @@ namespace DefaultNamespace
             new(0, 1, 1)
         };
 
-        public static void Generate(Chunk chunk, float isoLevel, Mesh mesh)
+        public static void Generate(Chunk chunk, float isoLevel, Mesh mesh, bool interpolate)
         {
             List<Vector3> vertices = new();
             List<int> triangles = new();
@@ -36,7 +36,8 @@ namespace DefaultNamespace
                             isoLevel,
                             vertices,
                             triangles,
-                            vertexIndicesByEdge);
+                            vertexIndicesByEdge,
+                            interpolate);
                     }
                 }
             }
@@ -58,7 +59,8 @@ namespace DefaultNamespace
             float isoLevel,
             List<Vector3> vertices,
             List<int> triangles,
-            Dictionary<EdgeKey, int> vertexIndicesByEdge)
+            Dictionary<EdgeKey, int> vertexIndicesByEdge,
+            bool interpolate)
         {
             Vector3[] positions = new Vector3[8];
             float[] values = new float[8];
@@ -110,7 +112,15 @@ namespace DefaultNamespace
                 if (!vertexIndicesByEdge.TryGetValue(edgeKey, out int vertexIndex))
                 {
                     vertexIndex = vertices.Count;
-                    vertices.Add((positions[a] + positions[b]) * 0.5f);
+                    Vector3 vertex = interpolate
+                        ? InterpolateEdgeVertex(
+                            positions[a],
+                            positions[b],
+                            values[a],
+                            values[b],
+                            isoLevel)
+                        : (positions[a] + positions[b]) * 0.5f;
+                    vertices.Add(vertex);
                     vertexIndicesByEdge.Add(edgeKey, vertexIndex);
                 }
 
@@ -133,6 +143,25 @@ namespace DefaultNamespace
                 triangles.Add(edgeVertexIndices[edgeB]);
                 triangles.Add(edgeVertexIndices[edgeA]);
             }
+        }
+
+        private static Vector3 InterpolateEdgeVertex(
+            Vector3 positionA,
+            Vector3 positionB,
+            float valueA,
+            float valueB,
+            float isoLevel)
+        {
+            float valueDelta = valueB - valueA;
+
+            // 0.000001f
+            if (Mathf.Abs(valueDelta) < 0.01f)
+            {
+                return (positionA + positionB) * 0.5f;
+            }
+
+            float t = Mathf.Clamp01((isoLevel - valueA) / valueDelta);
+            return Vector3.Lerp(positionA, positionB, t);
         }
 
         private readonly struct EdgeKey
