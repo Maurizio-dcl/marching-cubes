@@ -22,6 +22,7 @@ namespace DefaultNamespace
         {
             List<Vector3> vertices = new();
             List<int> triangles = new();
+            Dictionary<EdgeKey, int> vertexIndicesByEdge = new();
 
             for (int z = 0; z < chunk.Density; z++)
             {
@@ -29,7 +30,13 @@ namespace DefaultNamespace
                 {
                     for (int x = 0; x < chunk.Density; x++)
                     {
-                        MarchCell(chunk, new Vector3Int(x, y, z), isoLevel, vertices, triangles);
+                        MarchCell(
+                            chunk,
+                            new Vector3Int(x, y, z),
+                            isoLevel,
+                            vertices,
+                            triangles,
+                            vertexIndicesByEdge);
                     }
                 }
             }
@@ -50,7 +57,8 @@ namespace DefaultNamespace
             Vector3Int cell,
             float isoLevel,
             List<Vector3> vertices,
-            List<int> triangles)
+            List<int> triangles,
+            Dictionary<EdgeKey, int> vertexIndicesByEdge)
         {
             Vector3[] positions = new Vector3[8];
             float[] values = new float[8];
@@ -78,9 +86,14 @@ namespace DefaultNamespace
                 return;
             }
 
-            Vector3[] edgeVertices = new Vector3[12];
+            int[] edgeVertexIndices = new int[12];
 
-            for (int edge = 0; edge < edgeVertices.Length; edge++)
+            for (int i = 0; i < edgeVertexIndices.Length; i++)
+            {
+                edgeVertexIndices[i] = -1;
+            }
+
+            for (int edge = 0; edge < edgeVertexIndices.Length; edge++)
             {
                 int a = MarchingCubesLookup.EdgeCorners[edge, 0];
                 int b = MarchingCubesLookup.EdgeCorners[edge, 1];
@@ -90,7 +103,18 @@ namespace DefaultNamespace
                     continue;
                 }
 
-                edgeVertices[edge] = Interpolate(positions[a], positions[b], values[a], values[b], isoLevel);
+                Vector3Int pointA = cell + CornerOffsets[a];
+                Vector3Int pointB = cell + CornerOffsets[b];
+                EdgeKey edgeKey = new(pointA, pointB);
+
+                if (!vertexIndicesByEdge.TryGetValue(edgeKey, out int vertexIndex))
+                {
+                    vertexIndex = vertices.Count;
+                    vertices.Add((positions[a] + positions[b]) * 0.5f);
+                    vertexIndicesByEdge.Add(edgeKey, vertexIndex);
+                }
+
+                edgeVertexIndices[edge] = vertexIndex;
             }
 
             for (int i = 0; i < 16; i += 3)
@@ -104,29 +128,59 @@ namespace DefaultNamespace
 
                 int edgeB = MarchingCubesLookup.Triangulation[caseIndex, i + 1];
                 int edgeC = MarchingCubesLookup.Triangulation[caseIndex, i + 2];
-                int vertexIndex = vertices.Count;
 
-                vertices.Add(edgeVertices[edgeC]);
-                vertices.Add(edgeVertices[edgeB]);
-                vertices.Add(edgeVertices[edgeA]);
-
-                triangles.Add(vertexIndex);
-                triangles.Add(vertexIndex + 1);
-                triangles.Add(vertexIndex + 2);
+                triangles.Add(edgeVertexIndices[edgeC]);
+                triangles.Add(edgeVertexIndices[edgeB]);
+                triangles.Add(edgeVertexIndices[edgeA]);
             }
         }
 
-        private static Vector3 Interpolate(Vector3 a, Vector3 b, float valueA, float valueB, float isoLevel)
+        private readonly struct EdgeKey
         {
-            float denominator = valueB - valueA;
+            private readonly Vector3Int _a;
+            private readonly Vector3Int _b;
 
-            if (Mathf.Abs(denominator) < Mathf.Epsilon)
+            public EdgeKey(Vector3Int a, Vector3Int b)
             {
-                return (a + b) * 0.5f;
+                if (Compare(a, b) <= 0)
+                {
+                    _a = a;
+                    _b = b;
+                }
+                else
+                {
+                    _a = b;
+                    _b = a;
+                }
             }
 
-            float t = Mathf.InverseLerp(valueA, valueB, isoLevel);
-            return Vector3.Lerp(a, b, t);
+            public override bool Equals(object obj)
+            {
+                return obj is EdgeKey other && _a == other._a && _b == other._b;
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    return (_a.GetHashCode() * 397) ^ _b.GetHashCode();
+                }
+            }
+
+            private static int Compare(Vector3Int a, Vector3Int b)
+            {
+                if (a.x != b.x)
+                {
+                    return a.x.CompareTo(b.x);
+                }
+
+                if (a.y != b.y)
+                {
+                    return a.y.CompareTo(b.y);
+                }
+
+                return a.z.CompareTo(b.z);
+            }
         }
     }
 }

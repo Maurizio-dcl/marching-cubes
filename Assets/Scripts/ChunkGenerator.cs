@@ -104,6 +104,7 @@ public class ChunkGenerator : MonoBehaviour
     [SerializeField, Range(1, 64)] private int density;
     [SerializeField, Min(1)] private float size;
     [SerializeField, Range(0f, 1f)] private float isoLevel = 0.5f;
+    [SerializeField] private bool autoRegenerateInEditor = true;
     [SerializeField] private Material chunkMaterial;
 
     [Header("Noise")] [SerializeField] private int octaves = 2;
@@ -121,16 +122,76 @@ public class ChunkGenerator : MonoBehaviour
 
     private void OnEnable()
     {
-        RefreshChunkPreview();
+        if (ShouldAutoRegenerate())
+        {
+            RefreshChunkPreview();
+        }
     }
 
     private void OnValidate()
     {
-        RefreshChunkPreview();
+        if (ShouldAutoRegenerate())
+        {
+            RefreshChunkPreview();
+        }
     }
 
     private void Start()
     {
+        RefreshChunkPreview();
+    }
+
+    [ContextMenu("Clear Chunk")]
+    private void ClearChunk()
+    {
+        if (_debugRenderer == null)
+        {
+            _debugRenderer = GetComponent<ChunkDebugRenderer>();
+        }
+
+        if (_debugRenderer != null)
+        {
+            _debugRenderer.Clear();
+        }
+
+        if (_meshFilter != null)
+        {
+            _meshFilter.sharedMesh = null;
+        }
+
+        if (_mesh != null)
+        {
+            DestroyGeneratedObject(_mesh);
+            _mesh = null;
+        }
+
+        if (_defaultChunkMaterial != null)
+        {
+            DestroyGeneratedObject(_defaultChunkMaterial);
+            _defaultChunkMaterial = null;
+        }
+
+        if (_chunkObject == null)
+        {
+            Transform existingChunk = transform.Find("Chunk");
+            _chunkObject = existingChunk != null ? existingChunk.gameObject : null;
+        }
+
+        if (_chunkObject != null)
+        {
+            DestroyGeneratedObject(_chunkObject);
+            _chunkObject = null;
+        }
+
+        _meshFilter = null;
+        _meshRenderer = null;
+        _chunk = default;
+    }
+
+    [ContextMenu("Regenerate Chunk")]
+    private void RegenerateChunk()
+    {
+        ClearChunk();
         RefreshChunkPreview();
     }
 
@@ -151,7 +212,7 @@ public class ChunkGenerator : MonoBehaviour
             return;
         }
 
-        _debugRenderer.Initialize(_chunk);
+        _debugRenderer.Initialize(_chunk, isoLevel);
     }
 
     private void GenerateMesh()
@@ -235,5 +296,27 @@ public class ChunkGenerator : MonoBehaviour
         GenerateChunk();
         InitializeDebugRenderer();
         GenerateMesh();
+    }
+
+    private bool ShouldAutoRegenerate()
+    {
+        return Application.isPlaying || autoRegenerateInEditor;
+    }
+
+    private static void DestroyGeneratedObject(Object target)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        if (Application.isPlaying)
+        {
+            Destroy(target);
+        }
+        else
+        {
+            DestroyImmediate(target);
+        }
     }
 }
