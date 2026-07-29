@@ -1,5 +1,4 @@
 using DefaultNamespace;
-using Unity.VisualScripting;
 using UnityEngine;
 
 public readonly struct Point
@@ -37,18 +36,24 @@ public readonly struct Chunk
         Position = position;
         Size = Mathf.Max(1, size);
         Density = Mathf.Clamp(density, 1, 64);
+        PointsPerEdge = Density + 1;
 
-        int pointsPerEdge = Density + 1;
-        int numberOfPoints = pointsPerEdge * pointsPerEdge * pointsPerEdge;
+        int numberOfPoints = PointsPerEdge * PointsPerEdge * PointsPerEdge;
         Points = new Point[numberOfPoints];
 
-        GeneratePoints(pointsPerEdge, noiseConfiguration);
+        GeneratePoints(noiseConfiguration);
     }
 
     public Point[] Points { get; }
     public Vector3Int Position { get; } // Global position
     public float Size { get; }
     public int Density { get; }
+    public int PointsPerEdge { get; }
+
+    public Point GetPoint(int x, int y, int z)
+    {
+        return Points[x + PointsPerEdge * (y + PointsPerEdge * z)];
+    }
 
     public Vector3 GetLocalPosition(Point point)
     {
@@ -57,18 +62,18 @@ public readonly struct Chunk
 
     public Vector3 GetGlobalPosition(Point point)
     {
-        return Position + GetLocalPosition(point);
+        return (Vector3)Position + GetLocalPosition(point);
     }
 
-    private void GeneratePoints(int pointsPerEdge, NoiseConfiguration noiseConfiguration)
+    private void GeneratePoints(NoiseConfiguration noiseConfiguration)
     {
         int index = 0;
 
-        for (int z = 0; z < pointsPerEdge; z++)
+        for (int z = 0; z < PointsPerEdge; z++)
         {
-            for (int y = 0; y < pointsPerEdge; y++)
+            for (int y = 0; y < PointsPerEdge; y++)
             {
-                for (int x = 0; x < pointsPerEdge; x++)
+                for (int x = 0; x < PointsPerEdge; x++)
                 {
                     Vector3 normalizedPosition = new Vector3(
                         x / (float)Density,
@@ -77,7 +82,7 @@ public readonly struct Chunk
                     );
 
                     Vector3 localPosition = normalizedPosition * Size;
-                    Vector3 globalPosition = Position + localPosition;
+                    Vector3 globalPosition = (Vector3)Position + localPosition;
                     float value = PerlinNoise3D.Fractal(globalPosition,
                         noiseConfiguration.Octaves,
                         noiseConfiguration.Frequency,
@@ -92,11 +97,14 @@ public readonly struct Chunk
     }
 }
 
+[ExecuteAlways]
 public class ChunkGenerator : MonoBehaviour
 {
     [SerializeField] private Vector3Int position;
     [SerializeField, Range(1, 64)] private int density;
     [SerializeField, Min(1)] private float size;
+    [SerializeField, Range(0f, 1f)] private float isoLevel = 0.5f;
+    [SerializeField] private Material chunkMaterial;
 
     [Header("Noise")] [SerializeField] private int octaves = 2;
     [SerializeField] private float frequency = 1f;
@@ -104,8 +112,17 @@ public class ChunkGenerator : MonoBehaviour
     [SerializeField] private float lacunarity = 2f;
 
     private ChunkDebugRenderer _debugRenderer;
+    private GameObject _chunkObject;
+    private MeshFilter _meshFilter;
+    private MeshRenderer _meshRenderer;
+    private Mesh _mesh;
+    private Material _defaultChunkMaterial;
     private Chunk _chunk;
-    private GameObject _chunkGo;
+
+    private void OnEnable()
+    {
+        RefreshChunkPreview();
+    }
 
     private void OnValidate()
     {
@@ -115,19 +132,11 @@ public class ChunkGenerator : MonoBehaviour
     private void Start()
     {
         RefreshChunkPreview();
-        InstantiateChunk();
     }
 
     private void GenerateChunk()
     {
         _chunk = new Chunk(position, size, density, new NoiseConfiguration(octaves, frequency, persistence, lacunarity));
-    }
-
-    private void InstantiateChunk()
-    {
-        _chunkGo = new GameObject("Chunk");
-        _chunkGo.transform.parent = transform;
-        _chunkGo.transform.localPosition = _chunk.Position;
     }
 
     private void InitializeDebugRenderer()
@@ -145,9 +154,86 @@ public class ChunkGenerator : MonoBehaviour
         _debugRenderer.Initialize(_chunk);
     }
 
+    private void GenerateMesh()
+    {
+        EnsureChunkObject();
+        EnsureMesh();
+
+        MarchingCubesMesher.Generate(_chunk, isoLevel, _mesh);
+        _meshFilter.sharedMesh = _mesh;
+        _meshRenderer.sharedMaterial = chunkMaterial != null
+            ? chunkMaterial
+            : GetDefaultChunkMaterial();
+    }
+
+    private void EnsureChunkObject()
+    {
+        if (_chunkObject == null)
+        {
+            Transform existingChunk = transform.Find("Chunk");
+            _chunkObject = existingChunk != null
+                ? existingChunk.gameObject
+                : new GameObject("Chunk");
+
+            _chunkObject.transform.SetParent(transform, false);
+        }
+
+        _chunkObject.transform.localPosition = _chunk.Position;
+        _chunkObject.transform.localRotation = Quaternion.identity;
+        _chunkObject.transform.localScale = Vector3.one;
+
+        if (!_chunkObject.TryGetComponent(out _meshFilter))
+        {
+            _meshFilter = _chunkObject.AddComponent<MeshFilter>();
+        }
+
+        if (!_chunkObject.TryGetComponent(out _meshRenderer))
+        {
+            _meshRenderer = _chunkObject.AddComponent<MeshRenderer>();
+        }
+    }
+
+    private void EnsureMesh()
+    {
+        if (_mesh != null)
+        {
+            return;
+        }
+
+        _mesh = _meshFilter.sharedMesh;
+
+        if (_mesh == null)
+        {
+            _mesh = new Mesh();
+            _mesh.name = "Marching Cubes Chunk";
+        }
+    }
+
+    private Material GetDefaultChunkMaterial()
+    {
+        if (_defaultChunkMaterial != null)
+        {
+            return _defaultChunkMaterial;
+        }
+
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+
+        if (shader == null)
+        {
+            shader = Shader.Find("Standard");
+        }
+
+        _defaultChunkMaterial = new Material(shader);
+        _defaultChunkMaterial.name = "Default Chunk Material";
+        _defaultChunkMaterial.color = Color.white;
+
+        return _defaultChunkMaterial;
+    }
+
     private void RefreshChunkPreview()
     {
         GenerateChunk();
         InitializeDebugRenderer();
+        GenerateMesh();
     }
 }
