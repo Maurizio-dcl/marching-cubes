@@ -20,37 +20,74 @@ namespace DefaultNamespace
 
         public static void Generate(Chunk chunk, float isoLevel, Mesh mesh, bool interpolate)
         {
-            List<Vector3> vertices = new();
-            List<int> triangles = new();
-            Dictionary<EdgeKey, int> vertexIndicesByEdge = new();
+            Builder builder = new(chunk, isoLevel, interpolate);
+            builder.MarchAll();
+            builder.ApplyTo(mesh);
+        }
 
-            for (int z = 0; z < chunk.Density; z++)
+        public sealed class Builder
+        {
+            private readonly Chunk _chunk;
+            private readonly float _isoLevel;
+            private readonly bool _interpolate;
+            private readonly List<Vector3> _vertices = new();
+            private readonly List<int> _triangles = new();
+            private readonly Dictionary<EdgeKey, int> _vertexIndicesByEdge = new();
+            private int _nextCellIndex;
+
+            public Builder(Chunk chunk, float isoLevel, bool interpolate)
             {
-                for (int y = 0; y < chunk.Density; y++)
+                _chunk = chunk;
+                _isoLevel = isoLevel;
+                _interpolate = interpolate;
+            }
+
+            public bool IsComplete => _nextCellIndex >= _chunk.Density * _chunk.Density * _chunk.Density;
+
+            public void MarchAll()
+            {
+                while (MarchNextCell())
                 {
-                    for (int x = 0; x < chunk.Density; x++)
-                    {
-                        MarchCell(
-                            chunk,
-                            new Vector3Int(x, y, z),
-                            isoLevel,
-                            vertices,
-                            triangles,
-                            vertexIndicesByEdge,
-                            interpolate);
-                    }
                 }
             }
 
-            mesh.name = "Marching Cubes Chunk";
-            mesh.Clear();
-            mesh.indexFormat = vertices.Count > 65535
-                ? IndexFormat.UInt32
-                : IndexFormat.UInt16;
-            mesh.SetVertices(vertices);
-            mesh.SetTriangles(triangles, 0);
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
+            public bool MarchNextCell()
+            {
+                if (IsComplete)
+                {
+                    return false;
+                }
+
+                int density = _chunk.Density;
+                int x = _nextCellIndex % density;
+                int y = _nextCellIndex / density % density;
+                int z = _nextCellIndex / (density * density);
+                _nextCellIndex++;
+
+                MarchCell(
+                    _chunk,
+                    new Vector3Int(x, y, z),
+                    _isoLevel,
+                    _vertices,
+                    _triangles,
+                    _vertexIndicesByEdge,
+                    _interpolate);
+
+                return true;
+            }
+
+            public void ApplyTo(Mesh mesh)
+            {
+                mesh.name = "Marching Cubes Chunk";
+                mesh.Clear();
+                mesh.indexFormat = _vertices.Count > 65535
+                    ? IndexFormat.UInt32
+                    : IndexFormat.UInt16;
+                mesh.SetVertices(_vertices);
+                mesh.SetTriangles(_triangles, 0);
+                mesh.RecalculateNormals();
+                mesh.RecalculateBounds();
+            }
         }
 
         private static void MarchCell(

@@ -108,6 +108,11 @@ public class ChunkGenerator : MonoBehaviour
     [SerializeField] private bool interpolate = true;
     [SerializeField] private Material chunkMaterial;
 
+    [Header("Generation Animation")]
+    [SerializeField] private bool generateCellsOverTime;
+    [SerializeField, Min(0.001f)] private float cellGenerationInterval = 0.05f;
+    [SerializeField, Min(1)] private int cellsPerInterval = 1;
+
     [Header("Noise")] [SerializeField] private int octaves = 2;
     [SerializeField] private float frequency = 1f;
     [SerializeField] private float persistence = 0.5f;
@@ -119,6 +124,8 @@ public class ChunkGenerator : MonoBehaviour
     private MeshRenderer _meshRenderer;
     private Mesh _mesh;
     private Material _defaultChunkMaterial;
+    private MarchingCubesMesher.Builder _animatedMeshBuilder;
+    private float _nextCellGenerationTime;
     private Chunk _chunk;
 
     private void OnEnable()
@@ -140,6 +147,11 @@ public class ChunkGenerator : MonoBehaviour
     private void Start()
     {
         RefreshChunkPreview();
+    }
+
+    private void Update()
+    {
+        UpdateAnimatedMeshGeneration();
     }
 
     [ContextMenu("Clear Chunk")]
@@ -186,6 +198,7 @@ public class ChunkGenerator : MonoBehaviour
 
         _meshFilter = null;
         _meshRenderer = null;
+        _animatedMeshBuilder = null;
         _chunk = default;
     }
 
@@ -221,11 +234,19 @@ public class ChunkGenerator : MonoBehaviour
         EnsureChunkObject();
         EnsureMesh();
 
-        MarchingCubesMesher.Generate(_chunk, isoLevel, _mesh, interpolate);
         _meshFilter.sharedMesh = _mesh;
         _meshRenderer.sharedMaterial = chunkMaterial != null
             ? chunkMaterial
             : GetDefaultChunkMaterial();
+
+        if (generateCellsOverTime)
+        {
+            StartAnimatedMeshGeneration();
+            return;
+        }
+
+        _animatedMeshBuilder = null;
+        MarchingCubesMesher.Generate(_chunk, isoLevel, _mesh, interpolate);
     }
 
     private void EnsureChunkObject()
@@ -290,6 +311,43 @@ public class ChunkGenerator : MonoBehaviour
         _defaultChunkMaterial.color = Color.white;
 
         return _defaultChunkMaterial;
+    }
+
+    private void StartAnimatedMeshGeneration()
+    {
+        _animatedMeshBuilder = new MarchingCubesMesher.Builder(_chunk, isoLevel, interpolate);
+        _animatedMeshBuilder.ApplyTo(_mesh);
+        _nextCellGenerationTime = Time.realtimeSinceStartup;
+    }
+
+    private void UpdateAnimatedMeshGeneration()
+    {
+        if (_animatedMeshBuilder == null)
+        {
+            return;
+        }
+
+        if (Time.realtimeSinceStartup < _nextCellGenerationTime)
+        {
+            return;
+        }
+
+        for (int i = 0; i < cellsPerInterval; i++)
+        {
+            if (!_animatedMeshBuilder.MarchNextCell())
+            {
+                _animatedMeshBuilder = null;
+                return;
+            }
+        }
+
+        _animatedMeshBuilder.ApplyTo(_mesh);
+        _nextCellGenerationTime = Time.realtimeSinceStartup + cellGenerationInterval;
+
+        if (_animatedMeshBuilder.IsComplete)
+        {
+            _animatedMeshBuilder = null;
+        }
     }
 
     private void RefreshChunkPreview()
