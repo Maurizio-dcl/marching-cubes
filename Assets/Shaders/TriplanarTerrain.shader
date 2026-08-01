@@ -39,6 +39,7 @@ Shader "Custom/Triplanar Terrain"
 
             TEXTURE2D(_UpTex);
             SAMPLER(sampler_UpTex);
+            float4 _UpTex_TexelSize;
             TEXTURE2D(_SideTex);
             SAMPLER(sampler_SideTex);
             TEXTURE2D(_DownTex);
@@ -99,10 +100,76 @@ Shader "Custom/Triplanar Terrain"
                 return lerp(y0, y1, local.z);
             }
 
+            half BoundaryOffsetAt(float3 positionWS)
+            {
+                return (ValueNoise(positionWS * _BoundaryNoiseScale) * 2.0 - 1.0)
+                    * _BoundaryNoiseStrength;
+            }
+
+            float2 UpTexelCoord(float3 positionWS)
+            {
+                float scale = max(_TextureScale, 0.0001);
+                float2 textureSize = max(_UpTex_TexelSize.zw, 1.0);
+                return floor(positionWS.xz * scale * textureSize);
+            }
+
+            float3 UpTexelCenterPositionWS(float3 positionWS)
+            {
+                float2 texel = UpTexelCoord(positionWS);
+                float2 textureSize = max(_UpTex_TexelSize.zw, 1.0);
+                float2 texelCenter = (texel + 0.5) / textureSize;
+                float scale = max(_TextureScale, 0.0001);
+                return float3(texelCenter.x / scale, positionWS.y, texelCenter.y / scale);
+            }
+
+            half UpBoundaryOffsetAt(float3 positionWS)
+            {
+                float3 snappedPositionWS = UpTexelCenterPositionWS(positionWS);
+                snappedPositionWS.y = 0.0;
+                return BoundaryOffsetAt(snappedPositionWS);
+            }
+
+            float2 WrapTexelCoord(float2 texelCoord, float2 textureSize)
+            {
+                return texelCoord - floor(texelCoord / textureSize) * textureSize;
+            }
+
+            half UpTexelMask(float3 positionWS, half normalY)
+            {
+                return step(_SlopeThreshold, normalY + UpBoundaryOffsetAt(positionWS));
+            }
+
             half4 SampleTopTexture(TEXTURE2D_PARAM(textureName, samplerName), float3 positionWS)
             {
                 float scale = max(_TextureScale, 0.0001);
                 return SAMPLE_TEXTURE2D(textureName, samplerName, positionWS.xz * scale);
+            }
+
+            half4 LoadUpTexel(float3 positionWS)
+            {
+                float2 textureSize = max(_UpTex_TexelSize.zw, 1.0);
+                int2 texelCoord = (int2)WrapTexelCoord(UpTexelCoord(positionWS), textureSize);
+                return LOAD_TEXTURE2D(_UpTex, texelCoord);
+            }
+
+            half NormalYAtUpTexelCenter(float3 positionWS, half normalY)
+            {
+                float2 dxPosition = ddx(positionWS.xz);
+                float2 dyPosition = ddy(positionWS.xz);
+                float dxNormalY = ddx(normalY);
+                float dyNormalY = ddy(normalY);
+                float determinant = dxPosition.x * dyPosition.y - dxPosition.y * dyPosition.x;
+
+                if (abs(determinant) < 0.000001)
+                {
+                    return normalY;
+                }
+
+                float2 normalGradient = float2(
+                    (dxNormalY * dyPosition.y - dyNormalY * dxPosition.y) / determinant,
+                    (dyNormalY * dxPosition.x - dxNormalY * dyPosition.x) / determinant);
+                float2 texelDelta = UpTexelCenterPositionWS(positionWS).xz - positionWS.xz;
+                return normalY + dot(normalGradient, texelDelta);
             }
 
             half4 SampleSideTexture(TEXTURE2D_PARAM(textureName, samplerName), float3 positionWS, half3 normalWS)
@@ -129,18 +196,15 @@ Shader "Custom/Triplanar Terrain"
             half4 frag(Varyings input) : SV_Target
             {
                 half3 normalWS = normalize(input.normalWS);
-                half boundaryOffset = (ValueNoise(input.positionWS * _BoundaryNoiseScale) * 2.0 - 1.0)
-                    * _BoundaryNoiseStrength;
-                half upBlend = smoothstep(
-                    _SlopeThreshold - _BlendWidth,
-                    _SlopeThreshold + _BlendWidth,
-                    normalWS.y + boundaryOffset);
+                half texelNormalY = NormalYAtUpTexelCenter(input.positionWS, normalWS.y);
+                half boundaryOffset = BoundaryOffsetAt(input.positionWS);
+                half upBlend = UpTexelMask(input.positionWS, texelNormalY);
                 half downBlend = smoothstep(
                     _SlopeThreshold - _BlendWidth,
                     _SlopeThreshold + _BlendWidth,
                     -normalWS.y + boundaryOffset);
 
-                half4 upColor = SampleTopTexture(TEXTURE2D_ARGS(_UpTex, sampler_UpTex), input.positionWS);
+                half4 upColor = LoadUpTexel(input.positionWS);
                 half4 sideColor = SampleSideTexture(TEXTURE2D_ARGS(_SideTex, sampler_SideTex), input.positionWS, normalWS);
                 half4 downColor = SampleTopTexture(TEXTURE2D_ARGS(_DownTex, sampler_DownTex), input.positionWS);
                 downColor = lerp(sideColor, downColor, saturate(_UseDownTexture));

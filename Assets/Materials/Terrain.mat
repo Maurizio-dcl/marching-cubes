@@ -38,9 +38,9 @@ Material:
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
-    - _BlendWidth: 0.112
-    - _BoundaryNoiseScale: 11.24
-    - _BoundaryNoiseStrength: 0.085
+    - _BlendWidth: 0.1
+    - _BoundaryNoiseScale: 8
+    - _BoundaryNoiseStrength: 0.1
     - _ColorNoiseStrength: 0.085
     - _ColorSteps: 5
     - _NormalSteps: 17.3
