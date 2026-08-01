@@ -1,0 +1,214 @@
+#pragma kernel GenerateGrass
+
+struct TerrainTriangle
+{
+    float3 p0;
+    float3 p1;
+    float3 p2;
+    float3 n0;
+    float3 n1;
+    float3 n2;
+    float area;
+};
+
+struct GrassBlade
+{
+    float3 positionWS;
+    float width;
+    float height;
+    float angle;
+    float4 color;
+};
+
+StructuredBuffer<TerrainTriangle> _Triangles;
+StructuredBuffer<float4> _GrassColors;
+AppendStructuredBuffer<GrassBlade> _GrassBlades;
+
+uint _TriangleCount;
+uint _GrassColorCount;
+uint _MaxCandidatesPerTriangle;
+uint _BoundaryPaddingTexels;
+uint _MinHeightTexels;
+uint _MaxHeightTexels;
+
+float _TextureScale;
+float2 _UpTextureSize;
+float _SlopeThreshold;
+float _BoundaryNoiseScale;
+float _BoundaryNoiseStrength;
+float _GrassDensity;
+float _BladeWidthWS;
+float _BladeHeightUnitWS;
+uint _Seed;
+
+float TerrainHash(float3 p)
+{
+    p = frac(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float TerrainValueNoise(float3 p)
+{
+    float3 cell = floor(p);
+    float3 local = frac(p);
+    local = local * local * (3.0 - 2.0 * local);
+
+    float c000 = TerrainHash(cell + float3(0, 0, 0));
+    float c100 = TerrainHash(cell + float3(1, 0, 0));
+    float c010 = TerrainHash(cell + float3(0, 1, 0));
+    float c110 = TerrainHash(cell + float3(1, 1, 0));
+    float c001 = TerrainHash(cell + float3(0, 0, 1));
+    float c101 = TerrainHash(cell + float3(1, 0, 1));
+    float c011 = TerrainHash(cell + float3(0, 1, 1));
+    float c111 = TerrainHash(cell + float3(1, 1, 1));
+
+    float x00 = lerp(c000, c100, local.x);
+    float x10 = lerp(c010, c110, local.x);
+    float x01 = lerp(c001, c101, local.x);
+    float x11 = lerp(c011, c111, local.x);
+    float y0 = lerp(x00, x10, local.y);
+    float y1 = lerp(x01, x11, local.y);
+    return lerp(y0, y1, local.z);
+}
+
+float TerrainBoundaryOffsetAt(float3 positionWS)
+{
+    return (TerrainValueNoise(positionWS * _BoundaryNoiseScale) * 2.0 - 1.0)
+        * _BoundaryNoiseStrength;
+}
+
+float2 TerrainUpTexelCoord(float3 positionWS)
+{
+    float scale = max(_TextureScale, 0.0001);
+    float2 textureSize = max(_UpTextureSize, float2(1.0, 1.0));
+    return floor(positionWS.xz * scale * textureSize);
+}
+
+float TerrainUpBoundaryOffsetAt(float3 positionWS)
+{
+    float2 texel = TerrainUpTexelCoord(positionWS);
+    float2 textureSize = max(_UpTextureSize, float2(1.0, 1.0));
+    float2 texelCenter = (texel + 0.5) / textureSize;
+    float scale = max(_TextureScale, 0.0001);
+    float3 snappedPositionWS = float3(texelCenter.x / scale, 0.0, texelCenter.y / scale);
+    return TerrainBoundaryOffsetAt(snappedPositionWS);
+}
+
+float TerrainTopMask(float3 positionWS, float normalY)
+{
+    return step(_SlopeThreshold, normalY + TerrainUpBoundaryOffsetAt(positionWS));
+}
+
+float Random01(uint state)
+{
+    state ^= state >> 16;
+    state *= 0x7feb352du;
+    state ^= state >> 15;
+    state *= 0x846ca68bu;
+    state ^= state >> 16;
+    return (state & 0x00ffffffu) / 16777216.0;
+}
+
+uint HashUint(uint a, uint b, uint c)
+{
+    uint state = a * 747796405u + b * 2891336453u + c * 277803737u + _Seed;
+    state ^= state >> 16;
+    state *= 2246822519u;
+    state ^= state >> 13;
+    state *= 3266489917u;
+    state ^= state >> 16;
+    return state;
+}
+
+float3 BarycentricSample(float r0, float r1)
+{
+    float sqrtR0 = sqrt(r0);
+    return float3(1.0 - sqrtR0, sqrtR0 * (1.0 - r1), sqrtR0 * r1);
+}
+
+bool IsTopTexelWithPadding(float3 positionWS, float normalY)
+{
+    float2 baseTexel = TerrainUpTexelCoord(positionWS);
+    float2 textureSize = max(_UpTextureSize, float2(1.0, 1.0));
+    int padding = (int)min(_BoundaryPaddingTexels, 8u);
+
+    for (int z = -8; z <= 8; z++)
+    {
+        for (int x = -8; x <= 8; x++)
+        {
+            if (abs(x) > padding || abs(z) > padding)
+            {
+                continue;
+            }
+
+            float2 texelCenter = (baseTexel + float2(x, z) + 0.5) / textureSize;
+            float scale = max(_TextureScale, 0.0001);
+            float3 neighborWS = float3(texelCenter.x / scale, positionWS.y, texelCenter.y / scale);
+
+            if (TerrainTopMask(neighborWS, normalY) < 0.5)
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+[numthreads(64, 1, 1)]
+void GenerateGrass(uint3 id : SV_DispatchThreadID)
+{
+    uint triangleIndex = id.x;
+
+    if (triangleIndex >= _TriangleCount || _GrassDensity <= 0.0 || _GrassColorCount == 0)
+    {
+        return;
+    }
+
+    TerrainTriangle terrainTriangle = _Triangles[triangleIndex];
+    float texelArea = max(_BladeWidthWS * _BladeWidthWS, 0.000001);
+    float expectedCandidates = terrainTriangle.area / texelArea * saturate(_GrassDensity);
+    uint candidateCount = min(_MaxCandidatesPerTriangle, (uint)ceil(expectedCandidates));
+
+    for (uint candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++)
+    {
+        uint seed = HashUint(triangleIndex, candidateIndex, 0u);
+        float candidateChance = saturate(expectedCandidates - (float)candidateIndex);
+
+        if (Random01(seed) > candidateChance)
+        {
+            continue;
+        }
+
+        float3 barycentric = BarycentricSample(
+            Random01(HashUint(triangleIndex, candidateIndex, 1u)),
+            Random01(HashUint(triangleIndex, candidateIndex, 2u)));
+        float3 positionWS = terrainTriangle.p0 * barycentric.x
+            + terrainTriangle.p1 * barycentric.y
+            + terrainTriangle.p2 * barycentric.z;
+        float3 normalWS = normalize(terrainTriangle.n0 * barycentric.x
+            + terrainTriangle.n1 * barycentric.y
+            + terrainTriangle.n2 * barycentric.z);
+
+        if (!IsTopTexelWithPadding(positionWS, normalWS.y))
+        {
+            continue;
+        }
+
+        uint heightRange = max(_MaxHeightTexels, _MinHeightTexels) - _MinHeightTexels + 1u;
+        uint heightTexels = _MinHeightTexels
+            + (uint)floor(Random01(HashUint(triangleIndex, candidateIndex, 3u)) * (float)heightRange);
+        uint colorIndex = min(
+            (uint)floor(Random01(HashUint(triangleIndex, candidateIndex, 4u)) * (float)_GrassColorCount),
+            _GrassColorCount - 1u);
+
+        GrassBlade blade;
+        blade.positionWS = positionWS;
+        blade.width = _BladeWidthWS;
+        blade.height = (float)max(1u, heightTexels) * _BladeHeightUnitWS;
+        blade.angle = Random01(HashUint(triangleIndex, candidateIndex, 5u)) * 6.28318530718;
+        blade.color = _GrassColors[colorIndex];
+        _GrassBlades.Append(blade);
+    }
+}

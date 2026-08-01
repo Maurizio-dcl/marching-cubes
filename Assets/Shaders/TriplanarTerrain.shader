@@ -33,9 +33,12 @@ Shader "Custom/Triplanar Terrain"
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+            #pragma multi_compile _ _SHADOWS_SOFT
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "TerrainTopMask.hlsl"
 
             TEXTURE2D(_UpTex);
             SAMPLER(sampler_UpTex);
@@ -67,66 +70,32 @@ Shader "Custom/Triplanar Terrain"
                 float4 positionHCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
                 float3 normalWS : TEXCOORD1;
+                float4 shadowCoord : TEXCOORD2;
             };
-
-            float Hash(float3 p)
-            {
-                p = frac(p * 0.3183099 + 0.1);
-                p *= 17.0;
-                return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
-            }
-
-            float ValueNoise(float3 p)
-            {
-                float3 cell = floor(p);
-                float3 local = frac(p);
-                local = local * local * (3.0 - 2.0 * local);
-
-                float c000 = Hash(cell + float3(0, 0, 0));
-                float c100 = Hash(cell + float3(1, 0, 0));
-                float c010 = Hash(cell + float3(0, 1, 0));
-                float c110 = Hash(cell + float3(1, 1, 0));
-                float c001 = Hash(cell + float3(0, 0, 1));
-                float c101 = Hash(cell + float3(1, 0, 1));
-                float c011 = Hash(cell + float3(0, 1, 1));
-                float c111 = Hash(cell + float3(1, 1, 1));
-
-                float x00 = lerp(c000, c100, local.x);
-                float x10 = lerp(c010, c110, local.x);
-                float x01 = lerp(c001, c101, local.x);
-                float x11 = lerp(c011, c111, local.x);
-                float y0 = lerp(x00, x10, local.y);
-                float y1 = lerp(x01, x11, local.y);
-                return lerp(y0, y1, local.z);
-            }
 
             half BoundaryOffsetAt(float3 positionWS)
             {
-                return (ValueNoise(positionWS * _BoundaryNoiseScale) * 2.0 - 1.0)
-                    * _BoundaryNoiseStrength;
+                return TerrainBoundaryOffsetAt(positionWS, _BoundaryNoiseScale, _BoundaryNoiseStrength);
             }
 
             float2 UpTexelCoord(float3 positionWS)
             {
-                float scale = max(_TextureScale, 0.0001);
-                float2 textureSize = max(_UpTex_TexelSize.zw, 1.0);
-                return floor(positionWS.xz * scale * textureSize);
+                return TerrainUpTexelCoord(positionWS, _TextureScale, _UpTex_TexelSize.zw);
             }
 
             float3 UpTexelCenterPositionWS(float3 positionWS)
             {
-                float2 texel = UpTexelCoord(positionWS);
-                float2 textureSize = max(_UpTex_TexelSize.zw, 1.0);
-                float2 texelCenter = (texel + 0.5) / textureSize;
-                float scale = max(_TextureScale, 0.0001);
-                return float3(texelCenter.x / scale, positionWS.y, texelCenter.y / scale);
+                return TerrainUpTexelCenterPositionWS(positionWS, _TextureScale, _UpTex_TexelSize.zw);
             }
 
             half UpBoundaryOffsetAt(float3 positionWS)
             {
-                float3 snappedPositionWS = UpTexelCenterPositionWS(positionWS);
-                snappedPositionWS.y = 0.0;
-                return BoundaryOffsetAt(snappedPositionWS);
+                return TerrainUpBoundaryOffsetAt(
+                    positionWS,
+                    _TextureScale,
+                    _UpTex_TexelSize.zw,
+                    _BoundaryNoiseScale,
+                    _BoundaryNoiseStrength);
             }
 
             float2 WrapTexelCoord(float2 texelCoord, float2 textureSize)
@@ -136,7 +105,14 @@ Shader "Custom/Triplanar Terrain"
 
             half UpTexelMask(float3 positionWS, half normalY)
             {
-                return step(_SlopeThreshold, normalY + UpBoundaryOffsetAt(positionWS));
+                return TerrainTopMask(
+                    positionWS,
+                    normalY,
+                    _TextureScale,
+                    _UpTex_TexelSize.zw,
+                    _SlopeThreshold,
+                    _BoundaryNoiseScale,
+                    _BoundaryNoiseStrength);
             }
 
             half4 SampleTopTexture(TEXTURE2D_PARAM(textureName, samplerName), float3 positionWS)
@@ -190,6 +166,7 @@ Shader "Custom/Triplanar Terrain"
                 output.positionHCS = positionInputs.positionCS;
                 output.positionWS = positionInputs.positionWS;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+                output.shadowCoord = TransformWorldToShadowCoord(positionInputs.positionWS);
                 return output;
             }
 
@@ -212,10 +189,10 @@ Shader "Custom/Triplanar Terrain"
                 half4 surfaceColor = lerp(sideColor, upColor, upBlend);
                 surfaceColor = lerp(surfaceColor, downColor, downBlend);
 
-                Light mainLight = GetMainLight();
+                Light mainLight = GetMainLight(input.shadowCoord);
                 half diffuse = saturate(dot(normalWS, mainLight.direction));
                 half3 ambient = SampleSH(normalWS);
-                half3 lighting = ambient + mainLight.color * diffuse;
+                half3 lighting = ambient + mainLight.color * diffuse * mainLight.shadowAttenuation;
                 half4 color = surfaceColor * _Color;
                 return half4(color.rgb * lighting, color.a);
             }

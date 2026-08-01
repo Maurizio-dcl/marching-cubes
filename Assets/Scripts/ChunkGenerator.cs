@@ -1,6 +1,10 @@
 using DefaultNamespace;
 using UnityEngine;
 
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
 public readonly struct Point
 {
     public Point(Vector3 normalizedPosition, float value)
@@ -118,18 +122,40 @@ public class ChunkGenerator : MonoBehaviour
     [SerializeField] private float persistence = 0.5f;
     [SerializeField] private float lacunarity = 2f;
 
+    [Header("Grass")]
+    [SerializeField] private bool renderGrass;
+    [SerializeField] private ComputeShader grassComputeShader;
+    [SerializeField] private Material grassMaterial;
+    [SerializeField, Range(0f, 1f)] private float grassDensity = 0.35f;
+    [SerializeField, Min(0)] private int grassBoundaryPaddingTexels = 1;
+    [SerializeField, Min(1)] private int minGrassHeightTexels = 2;
+    [SerializeField, Min(1)] private int maxGrassHeightTexels = 5;
+    [SerializeField, Min(1)] private int maxGrassBlades = 65536;
+    [SerializeField, Min(1)] private int maxGrassCandidatesPerTriangle = 64;
+    [SerializeField] private int grassSeed = 1;
+    [SerializeField] private Color[] grassColors =
+    {
+        new(0.33f, 0.68f, 0.24f, 1f),
+        new(0.24f, 0.55f, 0.18f, 1f),
+        new(0.47f, 0.77f, 0.29f, 1f)
+    };
+
     private ChunkDebugRenderer _debugRenderer;
     private GameObject _chunkObject;
     private MeshFilter _meshFilter;
     private MeshRenderer _meshRenderer;
+    private TerrainGrassRenderer _grassRenderer;
     private Mesh _mesh;
     private Material _defaultChunkMaterial;
+    private Material _defaultGrassMaterial;
     private MarchingCubesMesher.Builder _animatedMeshBuilder;
     private float _nextCellGenerationTime;
     private Chunk _chunk;
 
     private void OnEnable()
     {
+        ResolveDefaultGrassAssets();
+
         if (ShouldAutoRegenerate())
         {
             RefreshChunkPreview();
@@ -138,6 +164,9 @@ public class ChunkGenerator : MonoBehaviour
 
     private void OnValidate()
     {
+        maxGrassHeightTexels = Mathf.Max(minGrassHeightTexels, maxGrassHeightTexels);
+        ResolveDefaultGrassAssets();
+
         if (ShouldAutoRegenerate())
         {
             RefreshChunkPreview();
@@ -184,6 +213,12 @@ public class ChunkGenerator : MonoBehaviour
             _defaultChunkMaterial = null;
         }
 
+        if (_defaultGrassMaterial != null)
+        {
+            DestroyGeneratedObject(_defaultGrassMaterial);
+            _defaultGrassMaterial = null;
+        }
+
         if (_chunkObject == null)
         {
             Transform existingChunk = transform.Find("Chunk");
@@ -198,6 +233,7 @@ public class ChunkGenerator : MonoBehaviour
 
         _meshFilter = null;
         _meshRenderer = null;
+        _grassRenderer = null;
         _animatedMeshBuilder = null;
         _chunk = default;
     }
@@ -247,6 +283,7 @@ public class ChunkGenerator : MonoBehaviour
 
         _animatedMeshBuilder = null;
         MarchingCubesMesher.Generate(_chunk, isoLevel, _mesh, interpolate);
+        RebuildGrass();
     }
 
     private void EnsureChunkObject()
@@ -273,6 +310,11 @@ public class ChunkGenerator : MonoBehaviour
         if (!_chunkObject.TryGetComponent(out _meshRenderer))
         {
             _meshRenderer = _chunkObject.AddComponent<MeshRenderer>();
+        }
+
+        if (!_chunkObject.TryGetComponent(out _grassRenderer))
+        {
+            _grassRenderer = _chunkObject.AddComponent<TerrainGrassRenderer>();
         }
     }
 
@@ -313,10 +355,35 @@ public class ChunkGenerator : MonoBehaviour
         return _defaultChunkMaterial;
     }
 
+    private Material GetGrassMaterial()
+    {
+        if (grassMaterial != null)
+        {
+            return grassMaterial;
+        }
+
+        if (_defaultGrassMaterial != null)
+        {
+            return _defaultGrassMaterial;
+        }
+
+        Shader shader = Shader.Find("Custom/Terrain Grass");
+
+        if (shader == null)
+        {
+            return null;
+        }
+
+        _defaultGrassMaterial = new Material(shader);
+        _defaultGrassMaterial.name = "Default Terrain Grass Material";
+        return _defaultGrassMaterial;
+    }
+
     private void StartAnimatedMeshGeneration()
     {
         _animatedMeshBuilder = new MarchingCubesMesher.Builder(_chunk, isoLevel, interpolate);
         _animatedMeshBuilder.ApplyTo(_mesh);
+        RebuildGrass();
         _nextCellGenerationTime = Time.realtimeSinceStartup;
     }
 
@@ -342,6 +409,7 @@ public class ChunkGenerator : MonoBehaviour
         }
 
         _animatedMeshBuilder.ApplyTo(_mesh);
+        RebuildGrass();
         _nextCellGenerationTime = Time.realtimeSinceStartup + cellGenerationInterval;
 
         if (_animatedMeshBuilder.IsComplete)
@@ -355,6 +423,55 @@ public class ChunkGenerator : MonoBehaviour
         GenerateChunk();
         InitializeDebugRenderer();
         GenerateMesh();
+    }
+
+    private void RebuildGrass()
+    {
+        if (_grassRenderer == null)
+        {
+            if (_chunkObject == null)
+            {
+                return;
+            }
+
+            _chunkObject.TryGetComponent(out _grassRenderer);
+        }
+
+        if (_grassRenderer == null)
+        {
+            return;
+        }
+
+        Material terrainMaterial = _meshRenderer != null
+            ? _meshRenderer.sharedMaterial
+            : chunkMaterial;
+
+        _grassRenderer.Rebuild(
+            _mesh,
+            _meshFilter.transform,
+            terrainMaterial,
+            grassComputeShader,
+            GetGrassMaterial(),
+            renderGrass,
+            grassDensity,
+            grassBoundaryPaddingTexels,
+            minGrassHeightTexels,
+            maxGrassHeightTexels,
+            maxGrassBlades,
+            maxGrassCandidatesPerTriangle,
+            grassSeed,
+            grassColors);
+    }
+
+    private void ResolveDefaultGrassAssets()
+    {
+#if UNITY_EDITOR
+        if (grassComputeShader == null)
+        {
+            grassComputeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Shaders/TerrainGrass.compute");
+        }
+
+#endif
     }
 
     private bool ShouldAutoRegenerate()
