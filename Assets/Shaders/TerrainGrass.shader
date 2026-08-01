@@ -47,8 +47,7 @@ Shader "Custom/Terrain Grass"
             {
                 float4 positionHCS : SV_POSITION;
                 half4 color : COLOR0;
-                half3 normalWS : TEXCOORD0;
-                float4 shadowCoord : TEXCOORD1;
+                float4 shadowCoord : TEXCOORD0;
             };
 
             Varyings vert(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
@@ -87,17 +86,16 @@ Shader "Custom/Terrain Grass"
                 Varyings output;
                 output.positionHCS = TransformWorldToHClip(positionWS);
                 output.color = blade.color;
-                output.normalWS = cameraForwardWS;
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
                 return output;
             }
 
             half4 frag(Varyings input) : SV_Target
             {
-                half3 normalWS = normalize(input.normalWS);
+                half3 normalWS = half3(0.0h, 1.0h, 0.0h);
                 Light mainLight = GetMainLight(input.shadowCoord);
-                half diffuse = abs(dot(normalWS, mainLight.direction));
-                half3 ambient = SampleSH(float3(0.0, 1.0, 0.0));
+                half diffuse = saturate(dot(normalWS, mainLight.direction));
+                half3 ambient = SampleSH(normalWS);
                 half3 direct = mainLight.color * diffuse * mainLight.shadowAttenuation;
                 half3 lighting = ambient + direct;
                 return half4(input.color.rgb * lighting, input.color.a);
