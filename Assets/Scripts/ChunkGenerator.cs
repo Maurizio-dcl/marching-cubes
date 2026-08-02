@@ -145,6 +145,11 @@ public class ChunkGenerator : MonoBehaviour
     [SerializeField, Min(1)] private int maxGrassBlades = 65536;
     [SerializeField, Min(1)] private int maxGrassCandidatesPerTriangle = 64;
     [SerializeField] private int grassSeed = 1;
+    [SerializeField] private bool grassWindEnabled = true;
+    [SerializeField] private Vector2 grassWindDirection = new(1f, 0.25f);
+    [SerializeField, Min(0f)] private float grassWindStrength = 0.12f;
+    [SerializeField, Min(0f)] private float grassWindSpeed = 1.5f;
+    [SerializeField, Min(0f)] private float grassWindVariation = 0.85f;
     [SerializeField] private Color[] grassColors =
     {
         new(0.33f, 0.68f, 0.24f, 1f),
@@ -472,7 +477,12 @@ public class ChunkGenerator : MonoBehaviour
             maxGrassBlades,
             maxGrassCandidatesPerTriangle,
             grassSeed,
-            grassColors);
+            grassColors,
+            grassWindEnabled,
+            grassWindDirection,
+            grassWindStrength,
+            grassWindSpeed,
+            grassWindVariation);
     }
 
     private void ResolveDefaultGrassAssets()

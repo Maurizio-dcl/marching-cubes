@@ -28,6 +28,11 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
     private static readonly int BladeWidthWSId = Shader.PropertyToID("_BladeWidthWS");
     private static readonly int BladeHeightUnitWSId = Shader.PropertyToID("_BladeHeightUnitWS");
     private static readonly int SeedId = Shader.PropertyToID("_Seed");
+    private static readonly int WindEnabledId = Shader.PropertyToID("_WindEnabled");
+    private static readonly int WindDirectionId = Shader.PropertyToID("_WindDirection");
+    private static readonly int WindStrengthId = Shader.PropertyToID("_WindStrength");
+    private static readonly int WindSpeedId = Shader.PropertyToID("_WindSpeed");
+    private static readonly int WindVariationId = Shader.PropertyToID("_WindVariation");
 
     private ComputeBuffer _triangleBuffer;
     private ComputeBuffer _colorBuffer;
@@ -37,6 +42,11 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
     private Material _renderMaterial;
     private Bounds _bounds;
     private bool _hasDrawableGrass;
+    private bool _windEnabled;
+    private Vector2 _windDirection = Vector2.right;
+    private float _windStrength;
+    private float _windSpeed = 1f;
+    private float _windVariation = 1f;
 
     private void LateUpdate()
     {
@@ -74,10 +84,22 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
         int maxBlades,
         int maxCandidatesPerTriangle,
         int seed,
-        Color[] colors)
+        Color[] colors,
+        bool windEnabled,
+        Vector2 windDirection,
+        float windStrength,
+        float windSpeed,
+        float windVariation)
     {
         Clear();
         _renderMaterial = renderMaterial;
+        _windEnabled = windEnabled;
+        _windDirection = windDirection.sqrMagnitude > 0.0001f
+            ? windDirection.normalized
+            : Vector2.right;
+        _windStrength = Mathf.Max(0f, windStrength);
+        _windSpeed = Mathf.Max(0f, windSpeed);
+        _windVariation = Mathf.Max(0f, windVariation);
 
         if (!enabled
             || mesh == null
@@ -191,6 +213,7 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
 
         _propertyBlock ??= new MaterialPropertyBlock();
         _propertyBlock.SetBuffer(GrassBladesId, _bladeBuffer);
+        ApplyWindProperties();
         _hasDrawableGrass = true;
     }
 
@@ -203,6 +226,7 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
 
         _propertyBlock ??= new MaterialPropertyBlock();
         _propertyBlock.SetBuffer(GrassBladesId, _bladeBuffer);
+        ApplyWindProperties();
         Graphics.DrawProceduralIndirect(
             _renderMaterial,
             _bounds,
@@ -214,6 +238,15 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
             ShadowCastingMode.Off,
             true,
             gameObject.layer);
+    }
+
+    private void ApplyWindProperties()
+    {
+        _propertyBlock.SetFloat(WindEnabledId, _windEnabled ? 1f : 0f);
+        _propertyBlock.SetVector(WindDirectionId, new Vector4(_windDirection.x, _windDirection.y, 0f, 0f));
+        _propertyBlock.SetFloat(WindStrengthId, _windStrength);
+        _propertyBlock.SetFloat(WindSpeedId, _windSpeed);
+        _propertyBlock.SetFloat(WindVariationId, _windVariation);
     }
 
     private static TerrainTriangle[] BuildTriangles(

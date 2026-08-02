@@ -42,6 +42,11 @@ Shader "Custom/Terrain Grass"
             };
 
             StructuredBuffer<GrassBlade> _GrassBlades;
+            float _WindEnabled;
+            float2 _WindDirection;
+            float _WindStrength;
+            float _WindSpeed;
+            float _WindVariation;
 
             struct Varyings
             {
@@ -79,9 +84,17 @@ Shader "Custom/Terrain Grass"
 
                 float3 rightWS = normalize(cross(float3(0.0, 1.0, 0.0), cameraForwardWS));
                 float2 corner = corners[cornerIndex];
+                float2 windDirection = dot(_WindDirection, _WindDirection) > 0.0001
+                    ? normalize(_WindDirection)
+                    : float2(1.0, 0.0);
+                float phase = dot(blade.positionWS.xz, windDirection) * _WindVariation
+                    + blade.angle * 1.73
+                    + _Time.y * _WindSpeed;
+                float wind = sin(phase) * _WindStrength * _WindEnabled * corner.y;
                 float3 positionWS = blade.positionWS
                     + rightWS * corner.x * blade.width
-                    + float3(0.0, corner.y * blade.height, 0.0);
+                    + float3(0.0, corner.y * blade.height, 0.0)
+                    + float3(windDirection.x, 0.0, windDirection.y) * wind * blade.height;
 
                 Varyings output;
                 output.positionHCS = TransformWorldToHClip(positionWS);
