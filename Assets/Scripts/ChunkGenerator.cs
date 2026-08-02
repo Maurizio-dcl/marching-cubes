@@ -10,7 +10,7 @@ public readonly struct Point
     public Point(Vector3 normalizedPosition, float value)
     {
         NormalizedPosition = normalizedPosition;
-        Value = Mathf.Clamp01(value);
+        Value = value;
     }
 
     public Vector3 NormalizedPosition { get; }
@@ -35,7 +35,18 @@ public readonly struct NoiseConfiguration
 
 public readonly struct Chunk
 {
+    public delegate float DensitySampler(Vector3 worldPosition);
+
     public Chunk(Vector3Int position, float size, int density, NoiseConfiguration noiseConfiguration)
+        : this(position, size, density, worldPosition => PerlinNoise3D.Fractal(worldPosition,
+            noiseConfiguration.Octaves,
+            noiseConfiguration.Frequency,
+            noiseConfiguration.Persistence,
+            noiseConfiguration.Lacunarity))
+    {
+    }
+
+    public Chunk(Vector3Int position, float size, int density, DensitySampler densitySampler)
     {
         Position = position;
         Size = Mathf.Max(1, size);
@@ -45,7 +56,7 @@ public readonly struct Chunk
         int numberOfPoints = PointsPerEdge * PointsPerEdge * PointsPerEdge;
         Points = new Point[numberOfPoints];
 
-        GeneratePoints(noiseConfiguration);
+        GeneratePoints(densitySampler);
     }
 
     public Point[] Points { get; }
@@ -69,8 +80,13 @@ public readonly struct Chunk
         return (Vector3)Position + GetLocalPosition(point);
     }
 
-    private void GeneratePoints(NoiseConfiguration noiseConfiguration)
+    private void GeneratePoints(DensitySampler densitySampler)
     {
+        if (densitySampler == null)
+        {
+            throw new System.ArgumentNullException(nameof(densitySampler));
+        }
+
         int index = 0;
 
         for (int z = 0; z < PointsPerEdge; z++)
@@ -87,11 +103,7 @@ public readonly struct Chunk
 
                     Vector3 localPosition = normalizedPosition * Size;
                     Vector3 globalPosition = (Vector3)Position + localPosition;
-                    float value = PerlinNoise3D.Fractal(globalPosition,
-                        noiseConfiguration.Octaves,
-                        noiseConfiguration.Frequency,
-                        noiseConfiguration.Persistence,
-                        noiseConfiguration.Lacunarity);
+                    float value = densitySampler(globalPosition);
 
                     Points[index++] = new Point(normalizedPosition,
                         value);
