@@ -10,17 +10,28 @@ public enum TerrainFeatureType
 {
     Hill,
     Mountain,
-    Terrace
+    Terrace,
+    Basin
+}
+
+public enum IslandBoundsMode
+{
+    ClampShapeToChunkGrid,
+    AllowOverflow
 }
 
 [System.Serializable]
 public struct TerrainFeature
 {
+    public bool enabled;
     public Vector2 position;
     [Min(0.001f)] public float radius;
     public float height;
     [Min(0.001f)] public float sharpness;
     public TerrainFeatureType type;
+    [Range(0f, 1f)] public float plateauRadius;
+    [Min(0f)] public float shapeNoiseFrequency;
+    [Range(0f, 1f)] public float shapeNoiseStrength;
 }
 
 [ExecuteAlways]
@@ -34,6 +45,8 @@ public sealed class IslandGenerator : MonoBehaviour
     [SerializeField, Range(1, 64)] private int density = 16;
     [SerializeField, Min(1)] private int chunkSize = 8;
     [SerializeField, Range(-32f, 32f)] private float isoLevel = 0f;
+    [SerializeField] private IslandBoundsMode boundsMode = IslandBoundsMode.ClampShapeToChunkGrid;
+    [SerializeField, Min(0f)] private float boundsPadding = 1f;
     [SerializeField] private bool autoRegenerateInEditor = true;
     [SerializeField] private bool interpolate = true;
     [SerializeField] private Material islandMaterial;
@@ -57,17 +70,22 @@ public sealed class IslandGenerator : MonoBehaviour
     [SerializeField, Min(0f)] private float undersideNoiseStrength = 1.2f;
 
     [Header("Terrain Features")]
-    [SerializeField] private bool useExplicitFeatureCount;
-    [SerializeField, Min(0)] private int featureCount = 5;
-    [SerializeField, Min(0f)] private float featuresPerChunkColumn = 1.2f;
+    [SerializeField] private List<TerrainFeature> terrainFeatures = new();
+    [SerializeField] private Vector2Int randomFeatureCountRange = new(3, 7);
     [SerializeField, Min(0f)] private float hillWeight = 0.55f;
     [SerializeField, Min(0f)] private float mountainWeight = 0.3f;
     [SerializeField, Min(0f)] private float terraceWeight = 0.15f;
-    [SerializeField] private Vector2 featureRadiusRange = new(1.25f, 3.25f);
-    [SerializeField] private Vector2 featureHeightRange = new(0.75f, 3.25f);
-    [SerializeField] private Vector2 featureSharpnessRange = new(1f, 3.5f);
+    [SerializeField, Min(0f)] private float basinWeight = 0.1f;
+    [SerializeField] private Vector2 featureRadiusRange = new(3f, 7f);
+    [SerializeField] private Vector2 featureHeightRange = new(1.5f, 5f);
+    [SerializeField] private Vector2 featureSharpnessRange = new(1f, 4f);
+    [SerializeField, Range(0f, 1f)] private float featureOverlap = 0.55f;
+    [SerializeField, Range(0f, 1f)] private float featureEdgePadding = 0.18f;
     [SerializeField, Min(1)] private int terraceStepCount = 4;
     [SerializeField, Range(0f, 1f)] private float terraceSmoothing = 0.15f;
+
+    [Header("Connected Geometry")]
+    [SerializeField] private bool removeDetachedGeometry = true;
 
     [Header("Grass")]
     [SerializeField] private bool renderGrass;
@@ -116,7 +134,9 @@ public sealed class IslandGenerator : MonoBehaviour
         featureRadiusRange = SortMinMax(featureRadiusRange, 0.001f);
         featureHeightRange = SortMinMax(featureHeightRange, 0f);
         featureSharpnessRange = SortMinMax(featureSharpnessRange, 0.001f);
+        randomFeatureCountRange = SortMinMax(randomFeatureCountRange, 0);
         maxGrassHeightTexels = Mathf.Max(minGrassHeightTexels, maxGrassHeightTexels);
+        ApplyBoundsConstraints();
         ResolveDefaultGrassAssets();
 
         if (ShouldAutoRegenerate())
@@ -146,6 +166,59 @@ public sealed class IslandGenerator : MonoBehaviour
     {
         ClearIsland();
         RefreshIslandPreview();
+    }
+
+    [ContextMenu("Add Default Terrain Feature")]
+    public void AddDefaultTerrainFeature()
+    {
+        terrainFeatures.Add(CreateDefaultTerrainFeature(TerrainFeatureType.Hill, Vector2.zero));
+        RequestRefreshIslandPreview();
+    }
+
+    public void AddTerrainFeature(TerrainFeatureType featureType)
+    {
+        terrainFeatures.Add(CreateDefaultTerrainFeature(featureType, Vector2.zero));
+        RequestRefreshIslandPreview();
+    }
+
+    [ContextMenu("Randomize Island Seed")]
+    public void RandomizeIslandSeed()
+    {
+        seed = Random.Range(int.MinValue, int.MaxValue);
+        RequestRefreshIslandPreview();
+    }
+
+    [ContextMenu("Generate Random Terrain Features")]
+    public void GenerateRandomTerrainFeatures()
+    {
+        ApplyBoundsConstraints();
+        InitializeGrid();
+
+        terrainFeatures.Clear();
+        int count = Random.Range(randomFeatureCountRange.x, randomFeatureCountRange.y + 1);
+        int generationSeed = Random.Range(int.MinValue, int.MaxValue);
+        GenerateRandomFeatures(terrainFeatures, 0, count, generationSeed);
+        RequestRefreshIslandPreview();
+    }
+
+    [ContextMenu("Generate Seed Terrain Features")]
+    public void GenerateSeedTerrainFeatures()
+    {
+        ApplyBoundsConstraints();
+        InitializeGrid();
+
+        terrainFeatures.Clear();
+        System.Random random = new(seed);
+        int count = random.Next(randomFeatureCountRange.x, randomFeatureCountRange.y + 1);
+        GenerateRandomFeatures(terrainFeatures, 0, count, seed);
+        RequestRefreshIslandPreview();
+    }
+
+    [ContextMenu("Clear Editable Terrain Features")]
+    public void ClearEditableTerrainFeatures()
+    {
+        terrainFeatures.Clear();
+        RequestRefreshIslandPreview();
     }
 
     [ContextMenu("Clear Island")]
@@ -203,7 +276,7 @@ public sealed class IslandGenerator : MonoBehaviour
         float localRadius = EvaluateLocalRadius(localPosition);
         float radius01 = Mathf.Clamp01(radialDistance / Mathf.Max(localRadius, 0.001f));
         float topHeight = EvaluateTopHeight(localPosition, radius01);
-        float bottomHeight = EvaluateBottomHeight(localPosition, radius01, topHeight);
+        float bottomHeight = EvaluateBottomHeight(localPosition, radius01);
         float verticalDensity = Mathf.Min(topHeight - worldPosition.y, worldPosition.y - bottomHeight);
         float edgeDensity = localRadius - radialDistance;
 
@@ -234,28 +307,34 @@ public sealed class IslandGenerator : MonoBehaviour
 
     public float EvaluateTopHeight(Vector3 islandLocalPosition, float radius01)
     {
-        float height = baseSurfaceHeight;
+        float unfeaturedTopHeight = EvaluateBaseTopHeight(islandLocalPosition, radius01);
+        float featureHeight = EvaluateTerrainFeatures(new Vector2(islandLocalPosition.x, islandLocalPosition.z))
+            * InteriorFeatureMask(radius01);
 
-        if (topNoiseStrength > 0f && topNoiseFrequency > 0f)
-        {
-            height += SampleSignedNoise2D(
-                islandLocalPosition.x + SeedOffset(23),
-                islandLocalPosition.z + SeedOffset(29),
-                topNoiseFrequency) * topNoiseStrength;
-        }
-
-        height += EvaluateTerrainFeatures(new Vector2(islandLocalPosition.x, islandLocalPosition.z));
-        height -= EdgeBlend(radius01) * edgeDrop;
-
-        return height;
+        return unfeaturedTopHeight + featureHeight;
     }
 
     public float EvaluateBottomHeight(Vector3 islandLocalPosition, float radius01)
     {
-        return EvaluateBottomHeight(
-            islandLocalPosition,
-            radius01,
-            EvaluateTopHeight(islandLocalPosition, radius01));
+        return EvaluateBottomHeight(islandLocalPosition, radius01, EvaluateBaseTopHeight(islandLocalPosition, radius01));
+    }
+
+    private float EvaluateBaseTopHeight(Vector3 islandLocalPosition, float radius01)
+    {
+        float height = baseSurfaceHeight;
+
+        if (topNoiseStrength > 0f && topNoiseFrequency > 0f)
+        {
+            float interiorMask = InteriorFeatureMask(radius01);
+            height += SampleSignedNoise2D(
+                islandLocalPosition.x + SeedOffset(23),
+                islandLocalPosition.z + SeedOffset(29),
+                topNoiseFrequency) * topNoiseStrength * interiorMask;
+        }
+
+        height -= EdgeBlend(radius01) * edgeDrop;
+
+        return height;
     }
 
     private float EvaluateBottomHeight(Vector3 islandLocalPosition, float radius01, float topHeight)
@@ -284,12 +363,14 @@ public sealed class IslandGenerator : MonoBehaviour
 
     public float EvaluateTerrainFeatures(Vector2 islandLocalXZ)
     {
-        float height = 0f;
+        float positiveHeight = 0f;
+        float basinDepth = 0f;
 
         for (int i = 0; i < _features.Length; i++)
         {
             TerrainFeature feature = _features[i];
-            float distance01 = Vector2.Distance(islandLocalXZ, feature.position) / feature.radius;
+            Vector2 offset = islandLocalXZ - feature.position;
+            float distance01 = EvaluateFeatureDistance01(offset, feature);
 
             if (distance01 >= 1f)
             {
@@ -301,23 +382,71 @@ public sealed class IslandGenerator : MonoBehaviour
             switch (feature.type)
             {
                 case TerrainFeatureType.Hill:
-                    height += smoothFalloff * feature.height;
+                    positiveHeight = Mathf.Max(positiveHeight, smoothFalloff * feature.height);
                     break;
                 case TerrainFeatureType.Mountain:
-                    height += Mathf.Pow(1f - distance01, feature.sharpness) * feature.height;
+                    positiveHeight = Mathf.Max(
+                        positiveHeight,
+                        Mathf.Pow(1f - distance01, feature.sharpness) * feature.height);
                     break;
                 case TerrainFeatureType.Terrace:
-                    float terrace = Mathf.Pow(smoothFalloff, feature.sharpness);
-                    height += QuantizeTerrace(terrace) * feature.height;
+                    float terrace = EvaluateTerraceFalloff(distance01, feature);
+                    positiveHeight = Mathf.Max(positiveHeight, QuantizeTerrace(terrace) * feature.height);
+                    break;
+                case TerrainFeatureType.Basin:
+                    basinDepth = Mathf.Max(basinDepth, EvaluateBasinFalloff(distance01, feature) * feature.height);
                     break;
             }
         }
 
-        return height;
+        return positiveHeight - basinDepth;
+    }
+
+    private float EvaluateFeatureDistance01(Vector2 offset, TerrainFeature feature)
+    {
+        float radius = Mathf.Max(0.001f, feature.radius);
+
+        if (feature.shapeNoiseStrength > 0f && feature.shapeNoiseFrequency > 0f)
+        {
+            float noise = SampleSignedNoise2D(
+                offset.x + feature.position.x + SeedOffset(53),
+                offset.y + feature.position.y + SeedOffset(59),
+                feature.shapeNoiseFrequency);
+            radius *= Mathf.Max(0.001f, 1f + noise * feature.shapeNoiseStrength);
+        }
+
+        return offset.magnitude / radius;
+    }
+
+    private float EvaluateTerraceFalloff(float distance01, TerrainFeature feature)
+    {
+        float plateauRadius = Mathf.Clamp01(feature.plateauRadius);
+
+        if (distance01 <= plateauRadius)
+        {
+            return 1f;
+        }
+
+        float edge01 = Mathf.InverseLerp(1f, plateauRadius, distance01);
+        return Mathf.Pow(Mathf.SmoothStep(0f, 1f, edge01), feature.sharpness);
+    }
+
+    private float EvaluateBasinFalloff(float distance01, TerrainFeature feature)
+    {
+        float plateauRadius = Mathf.Clamp01(feature.plateauRadius);
+
+        if (distance01 <= plateauRadius)
+        {
+            return 1f;
+        }
+
+        float edge01 = Mathf.InverseLerp(1f, plateauRadius, distance01);
+        return Mathf.Pow(Mathf.SmoothStep(0f, 1f, edge01), feature.sharpness);
     }
 
     private void RefreshIslandPreview()
     {
+        ApplyBoundsConstraints();
         ClearIsland();
         InitializeGrid();
         GenerateFeatures();
@@ -370,6 +499,7 @@ public sealed class IslandGenerator : MonoBehaviour
     private void GenerateChunks()
     {
         Material material = islandMaterial != null ? islandMaterial : GetDefaultIslandMaterial();
+        List<GeneratedChunkMesh> generatedChunks = new(chunksPerAxis * chunksPerAxis * chunksPerAxis);
 
         for (int z = 0; z < chunksPerAxis; z++)
         {
@@ -386,46 +516,81 @@ public sealed class IslandGenerator : MonoBehaviour
                     mesh.name = $"Island Chunk {x} {y} {z}";
                     MarchingCubesMesher.Generate(chunk, isoLevel, mesh, interpolate);
 
-                    GameObject chunkObject = new($"Island Chunk {x} {y} {z}");
-                    chunkObject.transform.SetParent(transform, false);
-                    chunkObject.transform.localPosition = chunk.Position;
-                    chunkObject.transform.localRotation = Quaternion.identity;
-                    chunkObject.transform.localScale = Vector3.one;
-
-                    MeshFilter meshFilter = chunkObject.AddComponent<MeshFilter>();
-                    MeshRenderer meshRenderer = chunkObject.AddComponent<MeshRenderer>();
-                    TerrainGrassRenderer grassRenderer = chunkObject.AddComponent<TerrainGrassRenderer>();
-                    meshFilter.sharedMesh = mesh;
-                    meshRenderer.sharedMaterial = material;
-                    RebuildGrass(mesh, meshFilter, meshRenderer, grassRenderer);
-
-                    _meshes.Add(mesh);
-                    _chunkObjects.Add(chunkObject);
+                    generatedChunks.Add(new GeneratedChunkMesh(chunkPosition, mesh));
                 }
             }
+        }
+
+        RemoveDetachedComponents(generatedChunks);
+
+        for (int i = 0; i < generatedChunks.Count; i++)
+        {
+            GeneratedChunkMesh generatedChunk = generatedChunks[i];
+            Mesh mesh = generatedChunk.Mesh;
+
+            if (mesh == null || mesh.triangles.Length == 0)
+            {
+                DestroyGeneratedObject(mesh);
+                continue;
+            }
+
+            GameObject chunkObject = new(mesh.name);
+            chunkObject.transform.SetParent(transform, false);
+            chunkObject.transform.localPosition = generatedChunk.Position;
+            chunkObject.transform.localRotation = Quaternion.identity;
+            chunkObject.transform.localScale = Vector3.one;
+
+            MeshFilter meshFilter = chunkObject.AddComponent<MeshFilter>();
+            MeshRenderer meshRenderer = chunkObject.AddComponent<MeshRenderer>();
+            TerrainGrassRenderer grassRenderer = chunkObject.AddComponent<TerrainGrassRenderer>();
+            meshFilter.sharedMesh = mesh;
+            meshRenderer.sharedMaterial = material;
+            RebuildGrass(mesh, meshFilter, meshRenderer, grassRenderer);
+
+            _meshes.Add(mesh);
+            _chunkObjects.Add(chunkObject);
         }
     }
 
     private void GenerateFeatures()
     {
-        int count = useExplicitFeatureCount
-            ? featureCount
-            : Mathf.RoundToInt(chunksPerAxis * chunksPerAxis * featuresPerChunkColumn);
+        List<TerrainFeature> features = new(terrainFeatures.Count);
 
+        for (int i = 0; i < terrainFeatures.Count; i++)
+        {
+            TerrainFeature feature = terrainFeatures[i];
+
+            if (!feature.enabled)
+            {
+                continue;
+            }
+
+            feature.radius = Mathf.Max(0.001f, feature.radius);
+            feature.sharpness = Mathf.Max(0.001f, feature.sharpness);
+            feature.plateauRadius = Mathf.Clamp01(feature.plateauRadius);
+            feature.shapeNoiseFrequency = Mathf.Max(0f, feature.shapeNoiseFrequency);
+            feature.shapeNoiseStrength = Mathf.Clamp01(feature.shapeNoiseStrength);
+            features.Add(feature);
+        }
+
+        _features = features.ToArray();
+    }
+
+    private void GenerateRandomFeatures(List<TerrainFeature> features, int existingFeatureCount, int count, int generationSeed)
+    {
         if (count <= 0)
         {
-            _features = System.Array.Empty<TerrainFeature>();
             return;
         }
 
-        List<TerrainFeature> features = new(count);
-        System.Random random = new(seed);
-        int attempts = count * 24;
-        float edgePadding = Mathf.Max(featureRadiusRange.y + 0.5f, islandRadius * 0.16f);
+        System.Random random = new(generationSeed);
+        int attempts = count * 32;
+        float edgePadding = Mathf.Max(0f, islandRadius * featureEdgePadding);
+        Vector2 usableRadiusRange = ClampFeatureRadiusRangeForPlacement(edgePadding);
 
-        for (int attempt = 0; attempt < attempts && features.Count < count; attempt++)
+        for (int attempt = 0; attempt < attempts && features.Count < existingFeatureCount + count; attempt++)
         {
-            float radius = RandomRange(random, featureRadiusRange);
+            float radius = RandomRange(random, usableRadiusRange);
             float placementRadius = Mathf.Max(0f, islandRadius - edgePadding - radius);
             float distance = Mathf.Sqrt((float)random.NextDouble()) * placementRadius;
             float angle = (float)random.NextDouble() * Mathf.PI * 2f;
@@ -436,17 +601,43 @@ public sealed class IslandGenerator : MonoBehaviour
                 continue;
             }
 
-            features.Add(new TerrainFeature
-            {
-                position = position,
-                radius = radius,
-                height = RandomRange(random, featureHeightRange),
-                sharpness = RandomRange(random, featureSharpnessRange),
-                type = PickFeatureType(random)
-            });
+            TerrainFeatureType type = PickFeatureType(random);
+            TerrainFeature feature = CreateDefaultTerrainFeature(type);
+            feature.position = position;
+            feature.radius = radius;
+            feature.height = RandomRange(random, featureHeightRange);
+            feature.sharpness = RandomRange(random, featureSharpnessRange);
+            features.Add(feature);
         }
 
-        _features = features.ToArray();
+        while (features.Count < existingFeatureCount + count)
+        {
+            float radius = RandomRange(random, usableRadiusRange);
+            float placementRadius = Mathf.Max(0f, islandRadius - edgePadding - radius);
+            float distance = Mathf.Sqrt((float)random.NextDouble()) * placementRadius;
+            float angle = (float)random.NextDouble() * Mathf.PI * 2f;
+            TerrainFeatureType type = PickFeatureType(random);
+            TerrainFeature feature = CreateDefaultTerrainFeature(type);
+            feature.position = new Vector2(Mathf.Cos(angle) * distance, Mathf.Sin(angle) * distance);
+            feature.radius = radius;
+            feature.height = RandomRange(random, featureHeightRange);
+            feature.sharpness = RandomRange(random, featureSharpnessRange);
+            features.Add(feature);
+        }
+    }
+
+    private Vector2 ClampFeatureRadiusRangeForPlacement(float edgePadding)
+    {
+        float maximumRadius = Mathf.Max(0.001f, islandRadius - edgePadding);
+        float min = Mathf.Min(featureRadiusRange.x, maximumRadius);
+        float max = Mathf.Min(featureRadiusRange.y, maximumRadius);
+
+        if (max < min)
+        {
+            max = min;
+        }
+
+        return new Vector2(min, max);
     }
 
     private bool OverlapsExistingFeature(Vector2 position, float radius, List<TerrainFeature> features)
@@ -454,7 +645,7 @@ public sealed class IslandGenerator : MonoBehaviour
         for (int i = 0; i < features.Count; i++)
         {
             TerrainFeature feature = features[i];
-            float minimumDistance = (radius + feature.radius) * 0.65f;
+            float minimumDistance = (radius + feature.radius) * Mathf.Clamp01(featureOverlap);
 
             if ((position - feature.position).sqrMagnitude < minimumDistance * minimumDistance)
             {
@@ -465,9 +656,68 @@ public sealed class IslandGenerator : MonoBehaviour
         return false;
     }
 
+    private TerrainFeature CreateDefaultTerrainFeature(TerrainFeatureType featureType, Vector2 position)
+    {
+        TerrainFeature feature = CreateDefaultTerrainFeature(featureType);
+        feature.position = position;
+        return feature;
+    }
+
+    public static TerrainFeature CreateDefaultTerrainFeature(TerrainFeatureType featureType)
+    {
+        TerrainFeature feature = new()
+        {
+            enabled = true,
+            type = featureType,
+            position = Vector2.zero
+        };
+
+        ApplyDefaultTerrainFeatureValues(ref feature);
+        return feature;
+    }
+
+    public static void ApplyDefaultTerrainFeatureValues(ref TerrainFeature feature)
+    {
+        switch (feature.type)
+        {
+            case TerrainFeatureType.Hill:
+                feature.radius = 5f;
+                feature.height = 2.5f;
+                feature.sharpness = 1.5f;
+                feature.plateauRadius = 0f;
+                feature.shapeNoiseFrequency = 0.25f;
+                feature.shapeNoiseStrength = 0.1f;
+                break;
+            case TerrainFeatureType.Mountain:
+                feature.radius = 5f;
+                feature.height = 5.5f;
+                feature.sharpness = 3.5f;
+                feature.plateauRadius = 0f;
+                feature.shapeNoiseFrequency = 0.35f;
+                feature.shapeNoiseStrength = 0.15f;
+                break;
+            case TerrainFeatureType.Terrace:
+                feature.radius = 5.5f;
+                feature.height = 3f;
+                feature.sharpness = 1.8f;
+                feature.plateauRadius = 0.35f;
+                feature.shapeNoiseFrequency = 0.2f;
+                feature.shapeNoiseStrength = 0.08f;
+                break;
+            case TerrainFeatureType.Basin:
+                feature.radius = 5.5f;
+                feature.height = 2.5f;
+                feature.sharpness = 1.6f;
+                feature.plateauRadius = 0.25f;
+                feature.shapeNoiseFrequency = 0.25f;
+                feature.shapeNoiseStrength = 0.12f;
+                break;
+        }
+    }
+
     private TerrainFeatureType PickFeatureType(System.Random random)
     {
-        float total = hillWeight + mountainWeight + terraceWeight;
+        float total = hillWeight + mountainWeight + terraceWeight + basinWeight;
 
         if (total <= 0f)
         {
@@ -483,9 +733,173 @@ public sealed class IslandGenerator : MonoBehaviour
 
         value -= hillWeight;
 
-        return value < mountainWeight
-            ? TerrainFeatureType.Mountain
-            : TerrainFeatureType.Terrace;
+        if (value < mountainWeight)
+        {
+            return TerrainFeatureType.Mountain;
+        }
+
+        value -= mountainWeight;
+
+        return value < terraceWeight
+            ? TerrainFeatureType.Terrace
+            : TerrainFeatureType.Basin;
+    }
+
+    private void RemoveDetachedComponents(List<GeneratedChunkMesh> generatedChunks)
+    {
+        if (!removeDetachedGeometry)
+        {
+            return;
+        }
+
+        int totalTriangleCount = 0;
+
+        for (int i = 0; i < generatedChunks.Count; i++)
+        {
+            GeneratedChunkMesh chunk = generatedChunks[i];
+            chunk.FirstTriangleIndex = totalTriangleCount;
+            chunk.TriangleCount = chunk.Mesh != null ? chunk.Mesh.triangles.Length / 3 : 0;
+            generatedChunks[i] = chunk;
+            totalTriangleCount += chunk.TriangleCount;
+        }
+
+        if (totalTriangleCount <= 1)
+        {
+            return;
+        }
+
+        DisjointSet components = new(totalTriangleCount);
+        Dictionary<VertexKey, int> firstTriangleByVertex = new(totalTriangleCount * 2);
+
+        for (int chunkIndex = 0; chunkIndex < generatedChunks.Count; chunkIndex++)
+        {
+            GeneratedChunkMesh chunk = generatedChunks[chunkIndex];
+
+            if (chunk.TriangleCount == 0)
+            {
+                continue;
+            }
+
+            Vector3[] vertices = chunk.Mesh.vertices;
+            int[] triangles = chunk.Mesh.triangles;
+
+            for (int triangleIndex = 0; triangleIndex < chunk.TriangleCount; triangleIndex++)
+            {
+                int globalTriangle = chunk.FirstTriangleIndex + triangleIndex;
+                int triangleStart = triangleIndex * 3;
+
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    Vector3 worldVertex = (Vector3)chunk.Position + vertices[triangles[triangleStart + corner]];
+                    VertexKey vertexKey = new(worldVertex);
+
+                    if (firstTriangleByVertex.TryGetValue(vertexKey, out int connectedTriangle))
+                    {
+                        components.Union(globalTriangle, connectedTriangle);
+                    }
+                    else
+                    {
+                        firstTriangleByVertex.Add(vertexKey, globalTriangle);
+                    }
+                }
+            }
+        }
+
+        float[] componentAreas = new float[totalTriangleCount];
+
+        for (int chunkIndex = 0; chunkIndex < generatedChunks.Count; chunkIndex++)
+        {
+            GeneratedChunkMesh chunk = generatedChunks[chunkIndex];
+
+            if (chunk.TriangleCount == 0)
+            {
+                continue;
+            }
+
+            Vector3[] vertices = chunk.Mesh.vertices;
+            int[] triangles = chunk.Mesh.triangles;
+
+            for (int triangleIndex = 0; triangleIndex < chunk.TriangleCount; triangleIndex++)
+            {
+                int triangleStart = triangleIndex * 3;
+                Vector3 a = vertices[triangles[triangleStart]];
+                Vector3 b = vertices[triangles[triangleStart + 1]];
+                Vector3 c = vertices[triangles[triangleStart + 2]];
+                float area = Vector3.Cross(b - a, c - a).magnitude * 0.5f;
+                int root = components.Find(chunk.FirstTriangleIndex + triangleIndex);
+                componentAreas[root] += area;
+            }
+        }
+
+        int largestComponent = 0;
+        float largestArea = 0f;
+
+        for (int i = 0; i < componentAreas.Length; i++)
+        {
+            if (componentAreas[i] > largestArea)
+            {
+                largestArea = componentAreas[i];
+                largestComponent = i;
+            }
+        }
+
+        for (int i = 0; i < generatedChunks.Count; i++)
+        {
+            KeepOnlyComponent(generatedChunks[i], components, largestComponent);
+        }
+    }
+
+    private static void KeepOnlyComponent(
+        GeneratedChunkMesh chunk,
+        DisjointSet components,
+        int component)
+    {
+        if (chunk.TriangleCount == 0)
+        {
+            return;
+        }
+
+        Vector3[] vertices = chunk.Mesh.vertices;
+        int[] triangles = chunk.Mesh.triangles;
+        Dictionary<int, int> remappedVertices = new(vertices.Length);
+        List<Vector3> keptVertices = new(vertices.Length);
+        List<int> keptTriangles = new(triangles.Length);
+
+        for (int triangleIndex = 0; triangleIndex < chunk.TriangleCount; triangleIndex++)
+        {
+            if (components.Find(chunk.FirstTriangleIndex + triangleIndex) != component)
+            {
+                continue;
+            }
+
+            int triangleStart = triangleIndex * 3;
+
+            for (int corner = 0; corner < 3; corner++)
+            {
+                int oldVertexIndex = triangles[triangleStart + corner];
+
+                if (!remappedVertices.TryGetValue(oldVertexIndex, out int newVertexIndex))
+                {
+                    newVertexIndex = keptVertices.Count;
+                    remappedVertices.Add(oldVertexIndex, newVertexIndex);
+                    keptVertices.Add(vertices[oldVertexIndex]);
+                }
+
+                keptTriangles.Add(newVertexIndex);
+            }
+        }
+
+        chunk.Mesh.Clear();
+
+        if (keptTriangles.Count == 0)
+        {
+            return;
+        }
+
+        chunk.Mesh.SetVertices(keptVertices);
+        chunk.Mesh.SetTriangles(keptTriangles, 0);
+        chunk.Mesh.RecalculateNormals();
+        chunk.Mesh.RecalculateBounds();
     }
 
     private float QuantizeTerrace(float value)
@@ -503,6 +917,73 @@ public sealed class IslandGenerator : MonoBehaviour
     {
         float falloff = Mathf.Max(0.0001f, edgeFalloff);
         return Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(1f - falloff, 1f, radius01));
+    }
+
+    private float InteriorFeatureMask(float radius01)
+    {
+        return 1f - EdgeBlend(radius01);
+    }
+
+    private void ApplyBoundsConstraints()
+    {
+        if (boundsMode != IslandBoundsMode.ClampShapeToChunkGrid)
+        {
+            return;
+        }
+
+        float totalSize = Mathf.Max(1, chunksPerAxis) * Mathf.Max(1, chunkSize);
+        float halfSize = totalSize * 0.5f;
+        float padding = Mathf.Min(boundsPadding, Mathf.Max(0f, halfSize - 0.001f));
+        float maxHorizontalRadius = Mathf.Max(0.001f, halfSize - padding);
+        float footprintMultiplier = 1f + Mathf.Max(0f, footprintNoiseStrength);
+        islandRadius = Mathf.Min(islandRadius, maxHorizontalRadius / footprintMultiplier);
+
+        float undersideLift = Mathf.Max(0f, undersideNoiseStrength);
+        float availableHeight = Mathf.Max(0.001f, totalSize - padding * 2f);
+        float topNoiseLift = Mathf.Max(0f, topNoiseStrength);
+        float maxFeatureLift = Mathf.Max(0f, availableHeight - topNoiseLift - undersideLift - 0.001f);
+        ClampFeatureHeights(maxFeatureLift);
+
+        float maxTopLift = topNoiseLift + CalculateMaxFeatureHeight();
+        float maxDepth = Mathf.Max(0.001f, availableHeight - maxTopLift - undersideLift);
+        islandDepth = Mathf.Min(islandDepth, maxDepth);
+
+        float minimumBaseHeight = -halfSize + padding + islandDepth + undersideLift;
+        float maximumBaseHeight = halfSize - padding - maxTopLift;
+        baseSurfaceHeight = Mathf.Clamp(baseSurfaceHeight, minimumBaseHeight, maximumBaseHeight);
+    }
+
+    private float CalculateMaxFeatureHeight()
+    {
+        float maxHeight = 0f;
+
+        for (int i = 0; i < terrainFeatures.Count; i++)
+        {
+            TerrainFeature feature = terrainFeatures[i];
+
+            if (feature.enabled)
+            {
+                maxHeight = Mathf.Max(maxHeight, Mathf.Max(0f, feature.height));
+            }
+        }
+
+        return maxHeight;
+    }
+
+    private void ClampFeatureHeights(float maxHeight)
+    {
+        maxHeight = Mathf.Max(0f, maxHeight);
+        featureHeightRange = new Vector2(
+            Mathf.Min(featureHeightRange.x, maxHeight),
+            Mathf.Min(featureHeightRange.y, maxHeight));
+        featureHeightRange = SortMinMax(featureHeightRange, 0f);
+
+        for (int i = 0; i < terrainFeatures.Count; i++)
+        {
+            TerrainFeature feature = terrainFeatures[i];
+            feature.height = Mathf.Min(feature.height, maxHeight);
+            terrainFeatures[i] = feature;
+        }
     }
 
     private float SampleSignedNoise2D(float x, float z, float frequency)
@@ -529,6 +1010,13 @@ public sealed class IslandGenerator : MonoBehaviour
         float min = Mathf.Max(minimum, Mathf.Min(range.x, range.y));
         float max = Mathf.Max(min, Mathf.Max(range.x, range.y));
         return new Vector2(min, max);
+    }
+
+    private static Vector2Int SortMinMax(Vector2Int range, int minimum)
+    {
+        int min = Mathf.Max(minimum, Mathf.Min(range.x, range.y));
+        int max = Mathf.Max(min, Mathf.Max(range.x, range.y));
+        return new Vector2Int(min, max);
     }
 
     private void RebuildGrass(
@@ -640,4 +1128,280 @@ public sealed class IslandGenerator : MonoBehaviour
             DestroyImmediate(target);
         }
     }
+
+    private struct GeneratedChunkMesh
+    {
+        public GeneratedChunkMesh(Vector3Int position, Mesh mesh)
+        {
+            Position = position;
+            Mesh = mesh;
+            FirstTriangleIndex = 0;
+            TriangleCount = 0;
+        }
+
+        public Vector3Int Position { get; }
+        public Mesh Mesh { get; }
+        public int FirstTriangleIndex { get; set; }
+        public int TriangleCount { get; set; }
+    }
+
+    private readonly struct VertexKey
+    {
+        private const float Scale = 10000f;
+        private readonly int _x;
+        private readonly int _y;
+        private readonly int _z;
+
+        public VertexKey(Vector3 position)
+        {
+            _x = Mathf.RoundToInt(position.x * Scale);
+            _y = Mathf.RoundToInt(position.y * Scale);
+            _z = Mathf.RoundToInt(position.z * Scale);
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is VertexKey other
+                && _x == other._x
+                && _y == other._y
+                && _z == other._z;
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = _x;
+                hash = (hash * 397) ^ _y;
+                hash = (hash * 397) ^ _z;
+                return hash;
+            }
+        }
+    }
+
+    private sealed class DisjointSet
+    {
+        private readonly int[] _parent;
+        private readonly byte[] _rank;
+
+        public DisjointSet(int count)
+        {
+            _parent = new int[count];
+            _rank = new byte[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                _parent[i] = i;
+            }
+        }
+
+        public int Find(int value)
+        {
+            int parent = _parent[value];
+
+            if (parent == value)
+            {
+                return value;
+            }
+
+            int root = Find(parent);
+            _parent[value] = root;
+            return root;
+        }
+
+        public void Union(int a, int b)
+        {
+            int rootA = Find(a);
+            int rootB = Find(b);
+
+            if (rootA == rootB)
+            {
+                return;
+            }
+
+            if (_rank[rootA] < _rank[rootB])
+            {
+                _parent[rootA] = rootB;
+                return;
+            }
+
+            if (_rank[rootA] > _rank[rootB])
+            {
+                _parent[rootB] = rootA;
+                return;
+            }
+
+            _parent[rootB] = rootA;
+            _rank[rootA]++;
+        }
+    }
 }
+
+#if UNITY_EDITOR
+[CustomPropertyDrawer(typeof(TerrainFeature))]
+public sealed class TerrainFeatureDrawer : PropertyDrawer
+{
+    private const float VerticalSpacing = 2f;
+
+    public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
+    {
+        return EditorGUIUtility.singleLineHeight * 9f + VerticalSpacing * 8f;
+    }
+
+    public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
+    {
+        SerializedProperty enabledProperty = property.FindPropertyRelative("enabled");
+        SerializedProperty typeProperty = property.FindPropertyRelative("type");
+        SerializedProperty positionProperty = property.FindPropertyRelative("position");
+        SerializedProperty radiusProperty = property.FindPropertyRelative("radius");
+        SerializedProperty heightProperty = property.FindPropertyRelative("height");
+        SerializedProperty sharpnessProperty = property.FindPropertyRelative("sharpness");
+        SerializedProperty plateauRadiusProperty = property.FindPropertyRelative("plateauRadius");
+        SerializedProperty shapeNoiseFrequencyProperty = property.FindPropertyRelative("shapeNoiseFrequency");
+        SerializedProperty shapeNoiseStrengthProperty = property.FindPropertyRelative("shapeNoiseStrength");
+
+        if (radiusProperty.floatValue <= 0f || sharpnessProperty.floatValue <= 0f)
+        {
+            ApplyDefaults(property);
+        }
+
+        EditorGUI.BeginProperty(position, label, property);
+
+        Rect line = new(position.x, position.y, position.width, EditorGUIUtility.singleLineHeight);
+        EditorGUI.PropertyField(line, enabledProperty, label);
+
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.BeginChangeCheck();
+        EditorGUI.PropertyField(line, typeProperty);
+
+        if (EditorGUI.EndChangeCheck())
+        {
+            ApplyDefaults(property);
+        }
+
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, positionProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, radiusProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, heightProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, sharpnessProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, plateauRadiusProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, shapeNoiseFrequencyProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, shapeNoiseStrengthProperty);
+
+        EditorGUI.EndProperty();
+    }
+
+    private static void ApplyDefaults(SerializedProperty property)
+    {
+        SerializedProperty typeProperty = property.FindPropertyRelative("type");
+        SerializedProperty enabledProperty = property.FindPropertyRelative("enabled");
+        TerrainFeature feature = IslandGenerator.CreateDefaultTerrainFeature(
+            (TerrainFeatureType)typeProperty.enumValueIndex);
+
+        enabledProperty.boolValue = true;
+        property.FindPropertyRelative("radius").floatValue = feature.radius;
+        property.FindPropertyRelative("height").floatValue = feature.height;
+        property.FindPropertyRelative("sharpness").floatValue = feature.sharpness;
+        property.FindPropertyRelative("plateauRadius").floatValue = feature.plateauRadius;
+        property.FindPropertyRelative("shapeNoiseFrequency").floatValue = feature.shapeNoiseFrequency;
+        property.FindPropertyRelative("shapeNoiseStrength").floatValue = feature.shapeNoiseStrength;
+    }
+}
+
+[CustomEditor(typeof(IslandGenerator))]
+public sealed class IslandGeneratorEditor : Editor
+{
+    public override void OnInspectorGUI()
+    {
+        serializedObject.Update();
+        IslandGenerator generator = (IslandGenerator)target;
+        SerializedProperty property = serializedObject.GetIterator();
+        bool enterChildren = true;
+
+        while (property.NextVisible(enterChildren))
+        {
+            using (new EditorGUI.DisabledScope(property.propertyPath == "m_Script"))
+            {
+                EditorGUILayout.PropertyField(property, true);
+            }
+
+            if (property.name == "terrainFeatures")
+            {
+                DrawFeatureActions(generator);
+            }
+
+            enterChildren = false;
+        }
+
+        serializedObject.ApplyModifiedProperties();
+    }
+
+    private static void DrawFeatureActions(IslandGenerator generator)
+    {
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Feature Actions", EditorStyles.boldLabel);
+
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            if (GUILayout.Button("Add Hill"))
+            {
+                Run(generator, () => generator.AddTerrainFeature(TerrainFeatureType.Hill));
+            }
+
+            if (GUILayout.Button("Add Mountain"))
+            {
+                Run(generator, () => generator.AddTerrainFeature(TerrainFeatureType.Mountain));
+            }
+
+            if (GUILayout.Button("Add Terrace"))
+            {
+                Run(generator, () => generator.AddTerrainFeature(TerrainFeatureType.Terrace));
+            }
+
+            if (GUILayout.Button("Add Basin"))
+            {
+                Run(generator, () => generator.AddTerrainFeature(TerrainFeatureType.Basin));
+            }
+        }
+
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            if (GUILayout.Button("Randomize Seed"))
+            {
+                Run(generator, generator.RandomizeIslandSeed);
+            }
+
+            if (GUILayout.Button("Generate Random"))
+            {
+                Run(generator, generator.GenerateRandomTerrainFeatures);
+            }
+
+            if (GUILayout.Button("Generate From Seed"))
+            {
+                Run(generator, generator.GenerateSeedTerrainFeatures);
+            }
+        }
+
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            if (GUILayout.Button("Clear Features"))
+            {
+                Run(generator, generator.ClearEditableTerrainFeatures);
+            }
+        }
+    }
+
+    private static void Run(IslandGenerator generator, System.Action action)
+    {
+        Undo.RecordObject(generator, "Update Island Features");
+        action();
+        EditorUtility.SetDirty(generator);
+    }
+}
+#endif
