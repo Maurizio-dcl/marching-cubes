@@ -29,7 +29,7 @@ Material:
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _SideTex:
-        m_Texture: {fileID: 2800000, guid: 03d164a7a1ef841d490dfa1369c4205f, type: 3}
+        m_Texture: {fileID: 2800000, guid: bcf63e234ef40461daf49bd94950fa39, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _UpTex:
@@ -37,7 +37,7 @@ Material:
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _WaterTopTex:
-        m_Texture: {fileID: 2800000, guid: 797cb3558fd32485493ae2a1ffd21c16, type: 3}
+        m_Texture: {fileID: 2800000, guid: 9f1f072e534ff4bab965c6bda0e706b0, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     m_Ints: []
@@ -53,7 +53,7 @@ Material:
     - _TextureScale: 1
     - _TriplanarSharpness: 4
     - _UseDownTexture: 0
-    - _WaterTopShoreWidth: 0.5
+    - _WaterTopShoreWidth: 0.4
     m_Colors:
     - _Color: {r: 1, g: 1, b: 1, a: 1}
     - _DownColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}

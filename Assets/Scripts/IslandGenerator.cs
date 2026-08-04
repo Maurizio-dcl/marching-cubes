@@ -734,6 +734,12 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             }
 
             ApplyTerrainWaterBodies(meshRenderer);
+
+            if (child.TryGetComponent(out MeshFilter meshFilter)
+                && child.TryGetComponent(out TerrainGrassRenderer grassRenderer))
+            {
+                RebuildGrass(meshFilter.sharedMesh, meshFilter, meshRenderer, grassRenderer);
+            }
         }
     }
 
@@ -1265,7 +1271,13 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             grassWindDirection,
             grassWindStrength,
             grassWindSpeed,
-            grassWindVariation);
+            grassWindVariation,
+            Mathf.Min(_waterBodies.Length, MaxTerrainWaterBodyShaderCount),
+            _terrainWaterBodyShaderData,
+            _terrainWaterBodyShapeShaderData,
+            transform.worldToLocalMatrix,
+            new Vector4(_islandCenter.x, _islandCenter.z, 0f, 0f),
+            new Vector4(SeedOffset(53), SeedOffset(59), 0f, 0f));
     }
 
     private Material GetDefaultIslandMaterial()

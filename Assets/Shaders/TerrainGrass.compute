@@ -31,11 +31,21 @@ uint _BoundaryPaddingTexels;
 uint _MinHeightTexels;
 uint _MaxHeightTexels;
 
+#define MAX_TERRAIN_WATER_BODIES 16
+
 float _TextureScale;
 float2 _UpTextureSize;
 float _SlopeThreshold;
+float _BlendWidth;
 float _BoundaryNoiseScale;
 float _BoundaryNoiseStrength;
+float _WaterTopShoreWidth;
+int _TerrainWaterBodyCount;
+float4 _TerrainWaterBodies[MAX_TERRAIN_WATER_BODIES];
+float4 _TerrainWaterBodyShapeData[MAX_TERRAIN_WATER_BODIES];
+float4x4 _TerrainWaterWorldToIsland;
+float4 _TerrainWaterIslandCenter;
+float4 _TerrainWaterNoiseSeedOffsets;
 float _GrassDensity;
 float _BladeWidthWS;
 float _BladeHeightUnitWS;
@@ -100,6 +110,137 @@ float TerrainTopMask(float3 positionWS, float normalY)
     return step(_SlopeThreshold, normalY + TerrainUpBoundaryOffsetAt(positionWS));
 }
 
+float3 TerrainUpTexelCenterPositionWS(float3 positionWS)
+{
+    float2 texel = TerrainUpTexelCoord(positionWS);
+    float2 textureSize = max(_UpTextureSize, float2(1.0, 1.0));
+    float2 texelCenter = (texel + 0.5) / textureSize;
+    float scale = max(_TextureScale, 0.0001);
+    return float3(texelCenter.x / scale, positionWS.y, texelCenter.y / scale);
+}
+
+static const int TERRAIN_PERLIN_PERMUTATION[256] =
+{
+    151, 160, 137, 91, 90, 15, 131, 13, 201, 95, 96, 53, 194, 233, 7, 225,
+    140, 36, 103, 30, 69, 142, 8, 99, 37, 240, 21, 10, 23, 190, 6, 148,
+    247, 120, 234, 75, 0, 26, 197, 62, 94, 252, 219, 203, 117, 35, 11, 32,
+    57, 177, 33, 88, 237, 149, 56, 87, 174, 20, 125, 136, 171, 168, 68, 175,
+    74, 165, 71, 134, 139, 48, 27, 166, 77, 146, 158, 231, 83, 111, 229, 122,
+    60, 211, 133, 230, 220, 105, 92, 41, 55, 46, 245, 40, 244, 102, 143, 54,
+    65, 25, 63, 161, 1, 216, 80, 73, 209, 76, 132, 187, 208, 89, 18, 169,
+    200, 196, 135, 130, 116, 188, 159, 86, 164, 100, 109, 198, 173, 186, 3, 64,
+    52, 217, 226, 250, 124, 123, 5, 202, 38, 147, 118, 126, 255, 82, 85, 212,
+    207, 206, 59, 227, 47, 16, 58, 17, 182, 189, 28, 42, 223, 183, 170, 213,
+    119, 248, 152, 2, 44, 154, 163, 70, 221, 153, 101, 155, 167, 43, 172, 9,
+    129, 22, 39, 253, 19, 98, 108, 110, 79, 113, 224, 232, 178, 185, 112, 104,
+    218, 246, 97, 228, 251, 34, 242, 193, 238, 210, 144, 12, 191, 179, 162, 241,
+    81, 51, 145, 235, 249, 14, 239, 107, 49, 192, 214, 31, 181, 199, 106, 157,
+    184, 84, 204, 176, 115, 121, 50, 45, 127, 4, 150, 254, 138, 236, 205, 93,
+    222, 114, 67, 29, 24, 72, 243, 141, 128, 195, 78, 66, 215, 61, 156, 180
+};
+
+int TerrainPerlinPermutation(int index)
+{
+    return TERRAIN_PERLIN_PERMUTATION[index & 255];
+}
+
+float TerrainPerlinFade(float value)
+{
+    return value * value * value * (value * (value * 6.0 - 15.0) + 10.0);
+}
+
+float TerrainPerlinGradient(int hash, float x, float y, float z)
+{
+    int gradient = hash & 15;
+    float u = gradient < 8 ? x : y;
+    float v = gradient < 4 ? y : (gradient == 12 || gradient == 14 ? x : z);
+    float first = (gradient & 1) == 0 ? u : -u;
+    float second = (gradient & 2) == 0 ? v : -v;
+    return first + second;
+}
+
+float TerrainPerlinSampleSigned(float x, float y, float z)
+{
+    int floorX = (int)floor(x);
+    int floorY = (int)floor(y);
+    int floorZ = (int)floor(z);
+    int latticeX = floorX & 255;
+    int latticeY = floorY & 255;
+    int latticeZ = floorZ & 255;
+
+    float localX = x - floorX;
+    float localY = y - floorY;
+    float localZ = z - floorZ;
+    float fadeX = TerrainPerlinFade(localX);
+    float fadeY = TerrainPerlinFade(localY);
+    float fadeZ = TerrainPerlinFade(localZ);
+
+    int a = TerrainPerlinPermutation(latticeX) + latticeY;
+    int aa = TerrainPerlinPermutation(a) + latticeZ;
+    int ab = TerrainPerlinPermutation(a + 1) + latticeZ;
+    int b = TerrainPerlinPermutation(latticeX + 1) + latticeY;
+    int ba = TerrainPerlinPermutation(b) + latticeZ;
+    int bb = TerrainPerlinPermutation(b + 1) + latticeZ;
+
+    float bottomFront = lerp(
+        TerrainPerlinGradient(TerrainPerlinPermutation(aa), localX, localY, localZ),
+        TerrainPerlinGradient(TerrainPerlinPermutation(ba), localX - 1.0, localY, localZ),
+        fadeX);
+    float bottomBack = lerp(
+        TerrainPerlinGradient(TerrainPerlinPermutation(ab), localX, localY - 1.0, localZ),
+        TerrainPerlinGradient(TerrainPerlinPermutation(bb), localX - 1.0, localY - 1.0, localZ),
+        fadeX);
+    float bottom = lerp(bottomFront, bottomBack, fadeY);
+    float topFront = lerp(
+        TerrainPerlinGradient(TerrainPerlinPermutation(aa + 1), localX, localY, localZ - 1.0),
+        TerrainPerlinGradient(TerrainPerlinPermutation(ba + 1), localX - 1.0, localY, localZ - 1.0),
+        fadeX);
+    float topBack = lerp(
+        TerrainPerlinGradient(TerrainPerlinPermutation(ab + 1), localX, localY - 1.0, localZ - 1.0),
+        TerrainPerlinGradient(TerrainPerlinPermutation(bb + 1), localX - 1.0, localY - 1.0, localZ - 1.0),
+        fadeX);
+    float top = lerp(topFront, topBack, fadeY);
+    return lerp(bottom, top, fadeZ);
+}
+
+float WaterTopMask(float3 positionWS)
+{
+    if (_TerrainWaterBodyCount <= 0)
+    {
+        return 0.0;
+    }
+
+    float mask = 0.0;
+    float3 maskPositionWS = TerrainUpTexelCenterPositionWS(positionWS);
+    float2 islandLocalXZ = mul(_TerrainWaterWorldToIsland, float4(maskPositionWS, 1.0)).xz
+        - _TerrainWaterIslandCenter.xy;
+    float distanceBoundaryOffset = TerrainUpBoundaryOffsetAt(positionWS) * max(_BlendWidth, 0.0001);
+    int count = min(_TerrainWaterBodyCount, MAX_TERRAIN_WATER_BODIES);
+
+    [loop]
+    for (int i = 0; i < count; i++)
+    {
+        float4 waterBody = _TerrainWaterBodies[i];
+        float4 shapeData = _TerrainWaterBodyShapeData[i];
+        float radius = max(waterBody.z, 0.0);
+
+        if (shapeData.x > 0.0 && shapeData.y > 0.0)
+        {
+            float2 noisePosition = (islandLocalXZ + _TerrainWaterNoiseSeedOffsets.xy) * shapeData.x;
+            float shapeNoise = TerrainPerlinSampleSigned(noisePosition.x, 0.0, noisePosition.y);
+            radius *= max(0.001, 1.0 + shapeNoise * shapeData.y);
+        }
+
+        float footprintSignedDistance = distance(islandLocalXZ, waterBody.xy) - radius;
+        float shoreSignedDistance = maskPositionWS.y - (waterBody.w + max(_WaterTopShoreWidth, 0.0));
+        float bodyMask = step(footprintSignedDistance + distanceBoundaryOffset, 0.0)
+            * step(shoreSignedDistance + distanceBoundaryOffset, 0.0);
+        mask = max(mask, bodyMask);
+    }
+
+    return mask;
+}
+
 float Random01(uint state)
 {
     state ^= state >> 16;
@@ -147,6 +288,11 @@ bool IsTopTexelWithPadding(float3 positionWS, float normalY)
             float3 neighborWS = float3(texelCenter.x / scale, positionWS.y, texelCenter.y / scale);
 
             if (TerrainTopMask(neighborWS, normalY) < 0.5)
+            {
+                return false;
+            }
+
+            if (WaterTopMask(neighborWS) > 0.5)
             {
                 return false;
             }

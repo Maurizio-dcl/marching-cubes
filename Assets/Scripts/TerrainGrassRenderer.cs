@@ -22,8 +22,16 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
     private static readonly int TextureScaleId = Shader.PropertyToID("_TextureScale");
     private static readonly int UpTextureSizeId = Shader.PropertyToID("_UpTextureSize");
     private static readonly int SlopeThresholdId = Shader.PropertyToID("_SlopeThreshold");
+    private static readonly int BlendWidthId = Shader.PropertyToID("_BlendWidth");
     private static readonly int BoundaryNoiseScaleId = Shader.PropertyToID("_BoundaryNoiseScale");
     private static readonly int BoundaryNoiseStrengthId = Shader.PropertyToID("_BoundaryNoiseStrength");
+    private static readonly int WaterTopShoreWidthId = Shader.PropertyToID("_WaterTopShoreWidth");
+    private static readonly int TerrainWaterBodyCountId = Shader.PropertyToID("_TerrainWaterBodyCount");
+    private static readonly int TerrainWaterBodiesId = Shader.PropertyToID("_TerrainWaterBodies");
+    private static readonly int TerrainWaterBodyShapeDataId = Shader.PropertyToID("_TerrainWaterBodyShapeData");
+    private static readonly int TerrainWaterWorldToIslandId = Shader.PropertyToID("_TerrainWaterWorldToIsland");
+    private static readonly int TerrainWaterIslandCenterId = Shader.PropertyToID("_TerrainWaterIslandCenter");
+    private static readonly int TerrainWaterNoiseSeedOffsetsId = Shader.PropertyToID("_TerrainWaterNoiseSeedOffsets");
     private static readonly int GrassDensityId = Shader.PropertyToID("_GrassDensity");
     private static readonly int BladeWidthWSId = Shader.PropertyToID("_BladeWidthWS");
     private static readonly int BladeHeightUnitWSId = Shader.PropertyToID("_BladeHeightUnitWS");
@@ -89,7 +97,13 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
         Vector2 windDirection,
         float windStrength,
         float windSpeed,
-        float windVariation)
+        float windVariation,
+        int waterBodyCount = 0,
+        Vector4[] waterBodies = null,
+        Vector4[] waterBodyShapeData = null,
+        Matrix4x4 waterWorldToIsland = default,
+        Vector4 waterIslandCenter = default,
+        Vector4 waterNoiseSeedOffsets = default)
     {
         Clear();
         _renderMaterial = renderMaterial;
@@ -183,8 +197,25 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
         computeShader.SetFloat(TextureScaleId, textureScale);
         computeShader.SetVector(UpTextureSizeId, new Vector4(upTexture.width, upTexture.height, 0.0f, 0.0f));
         computeShader.SetFloat(SlopeThresholdId, terrainMaterial.GetFloat("_SlopeThreshold"));
+        computeShader.SetFloat(BlendWidthId, terrainMaterial.GetFloat("_BlendWidth"));
         computeShader.SetFloat(BoundaryNoiseScaleId, terrainMaterial.GetFloat("_BoundaryNoiseScale"));
         computeShader.SetFloat(BoundaryNoiseStrengthId, terrainMaterial.GetFloat("_BoundaryNoiseStrength"));
+        computeShader.SetFloat(
+            WaterTopShoreWidthId,
+            terrainMaterial.HasProperty("_WaterTopShoreWidth")
+                ? terrainMaterial.GetFloat("_WaterTopShoreWidth")
+                : 0f);
+        computeShader.SetInt(TerrainWaterBodyCountId, Mathf.Max(0, waterBodyCount));
+
+        if (waterBodyCount > 0 && waterBodies != null && waterBodyShapeData != null)
+        {
+            computeShader.SetVectorArray(TerrainWaterBodiesId, waterBodies);
+            computeShader.SetVectorArray(TerrainWaterBodyShapeDataId, waterBodyShapeData);
+            computeShader.SetMatrix(TerrainWaterWorldToIslandId, waterWorldToIsland);
+            computeShader.SetVector(TerrainWaterIslandCenterId, waterIslandCenter);
+            computeShader.SetVector(TerrainWaterNoiseSeedOffsetsId, waterNoiseSeedOffsets);
+        }
+
         computeShader.SetFloat(GrassDensityId, Mathf.Clamp01(density));
         computeShader.SetFloat(BladeWidthWSId, texelWorldSize);
         computeShader.SetFloat(BladeHeightUnitWSId, texelWorldSize);
