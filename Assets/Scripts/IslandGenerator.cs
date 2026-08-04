@@ -1,4 +1,5 @@
 using DefaultNamespace;
+using DefaultNamespace.Water;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -11,7 +12,8 @@ public enum TerrainFeatureType
     Hill,
     Mountain,
     Terrace,
-    Basin
+    Basin,
+    Lake
 }
 
 public enum IslandBoundsMode
@@ -32,10 +34,28 @@ public struct TerrainFeature
     [Range(0f, 1f)] public float plateauRadius;
     [Min(0f)] public float shapeNoiseFrequency;
     [Range(0f, 1f)] public float shapeNoiseStrength;
+    [Min(0f)] public float shoreWidth;
+    public float waterSurfaceHeight;
+}
+
+public readonly struct GeneratedWaterBody
+{
+    public GeneratedWaterBody(Vector2 localPosition, float radius, float shoreWidth, float surfaceHeight)
+    {
+        LocalPosition = localPosition;
+        Radius = radius;
+        ShoreWidth = shoreWidth;
+        SurfaceHeight = surfaceHeight;
+    }
+
+    public Vector2 LocalPosition { get; }
+    public float Radius { get; }
+    public float ShoreWidth { get; }
+    public float SurfaceHeight { get; }
 }
 
 [ExecuteAlways]
-public sealed class IslandGenerator : MonoBehaviour
+public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 {
     private const string ChunkObjectNamePrefix = "Island Chunk ";
 
@@ -76,6 +96,7 @@ public sealed class IslandGenerator : MonoBehaviour
     [SerializeField, Min(0f)] private float mountainWeight = 0.3f;
     [SerializeField, Min(0f)] private float terraceWeight = 0.15f;
     [SerializeField, Min(0f)] private float basinWeight = 0.1f;
+    [SerializeField, Min(0f)] private float lakeWeight = 0.12f;
     [SerializeField] private Vector2 featureRadiusRange = new(3f, 7f);
     [SerializeField] private Vector2 featureHeightRange = new(1.5f, 5f);
     [SerializeField] private Vector2 featureSharpnessRange = new(1f, 4f);
@@ -86,6 +107,9 @@ public sealed class IslandGenerator : MonoBehaviour
 
     [Header("Connected Geometry")]
     [SerializeField] private bool removeDetachedGeometry = true;
+
+    [Header("Water")]
+    [SerializeField] private bool generateWater = true;
 
     [Header("Grass")]
     [SerializeField] private bool renderGrass;
@@ -113,6 +137,7 @@ public sealed class IslandGenerator : MonoBehaviour
     private readonly List<GameObject> _chunkObjects = new();
     private readonly List<Mesh> _meshes = new();
     private TerrainFeature[] _features = System.Array.Empty<TerrainFeature>();
+    private GeneratedWaterBody[] _waterBodies = System.Array.Empty<GeneratedWaterBody>();
     private Material _defaultIslandMaterial;
     private Material _defaultGrassMaterial;
     private float _totalSize;
@@ -288,6 +313,16 @@ public sealed class IslandGenerator : MonoBehaviour
         return Mathf.Min(verticalDensity, edgeDensity);
     }
 
+    public float IsoLevel => isoLevel;
+    public Vector3 GridOrigin => _gridOrigin;
+    public Vector3 IslandCenter => _islandCenter;
+    public float ChunkSize => chunkSize;
+    public int ChunksPerAxis => chunksPerAxis;
+    public int TerrainCellsPerAxis => density;
+    public float TotalSize => _totalSize;
+    public Bounds WorldBounds => new((Vector3)_gridOrigin + Vector3.one * (_totalSize * 0.5f), Vector3.one * _totalSize);
+    public GeneratedWaterBody[] WaterBodies => _waterBodies;
+
     public float EvaluateLocalRadius(Vector3 islandLocalPosition)
     {
         if (footprintNoiseStrength <= 0f || footprintNoiseFrequency <= 0f)
@@ -399,6 +434,7 @@ public sealed class IslandGenerator : MonoBehaviour
                     positiveHeight = Mathf.Max(positiveHeight, QuantizeTerrace(terrace) * feature.height);
                     break;
                 case TerrainFeatureType.Basin:
+                case TerrainFeatureType.Lake:
                     basinDepth = Mathf.Max(basinDepth, EvaluateBasinFalloff(distance01, feature) * feature.height);
                     break;
             }
@@ -456,6 +492,7 @@ public sealed class IslandGenerator : MonoBehaviour
         InitializeGrid();
         GenerateFeatures();
         GenerateChunks();
+        GenerateWater();
     }
 
     private void RequestRefreshIslandPreview()
@@ -560,6 +597,7 @@ public sealed class IslandGenerator : MonoBehaviour
     private void GenerateFeatures()
     {
         List<TerrainFeature> features = new(terrainFeatures.Count);
+        List<GeneratedWaterBody> waterBodies = new(terrainFeatures.Count);
 
         for (int i = 0; i < terrainFeatures.Count; i++)
         {
@@ -575,10 +613,59 @@ public sealed class IslandGenerator : MonoBehaviour
             feature.plateauRadius = Mathf.Clamp01(feature.plateauRadius);
             feature.shapeNoiseFrequency = Mathf.Max(0f, feature.shapeNoiseFrequency);
             feature.shapeNoiseStrength = Mathf.Clamp01(feature.shapeNoiseStrength);
+            feature.shoreWidth = Mathf.Max(0f, feature.shoreWidth);
+
+            if (feature.type == TerrainFeatureType.Lake)
+            {
+                feature.plateauRadius = Mathf.Clamp01((feature.radius - feature.shoreWidth) / feature.radius);
+            }
+
             features.Add(feature);
+
+            if (feature.type == TerrainFeatureType.Lake)
+            {
+                waterBodies.Add(new GeneratedWaterBody(
+                    feature.position,
+                    feature.radius,
+                    feature.shoreWidth,
+                    feature.waterSurfaceHeight));
+            }
         }
 
         _features = features.ToArray();
+        _waterBodies = waterBodies.ToArray();
+    }
+
+    private void GenerateWater()
+    {
+        if (!generateWater)
+        {
+            if (TryGetComponent(out WaterSimulation existingWaterSimulation))
+            {
+                existingWaterSimulation.Clear();
+            }
+
+            return;
+        }
+
+        if (!TryGetComponent(out WaterSimulation waterSimulation))
+        {
+            waterSimulation = gameObject.AddComponent<WaterSimulation>();
+        }
+
+        LakeWaterBody[] lakes = new LakeWaterBody[_waterBodies.Length];
+
+        for (int i = 0; i < _waterBodies.Length; i++)
+        {
+            GeneratedWaterBody body = _waterBodies[i];
+            lakes[i] = new LakeWaterBody(
+                new Vector2(_islandCenter.x + body.LocalPosition.x, _islandCenter.z + body.LocalPosition.y),
+                body.Radius,
+                body.ShoreWidth,
+                _islandCenter.y + body.SurfaceHeight);
+        }
+
+        waterSimulation.Initialize(this, chunksPerAxis, chunkSize, lakes);
     }
 
     private void GenerateRandomFeatures(List<TerrainFeature> features, int existingFeatureCount, int count, int generationSeed)
@@ -716,13 +803,25 @@ public sealed class IslandGenerator : MonoBehaviour
                 feature.plateauRadius = 0.25f;
                 feature.shapeNoiseFrequency = 0.25f;
                 feature.shapeNoiseStrength = 0.12f;
+                feature.shoreWidth = 1.2f;
+                feature.waterSurfaceHeight = 0f;
+                break;
+            case TerrainFeatureType.Lake:
+                feature.radius = 4.5f;
+                feature.height = 2.2f;
+                feature.sharpness = 1.8f;
+                feature.plateauRadius = 0.35f;
+                feature.shapeNoiseFrequency = 0.18f;
+                feature.shapeNoiseStrength = 0.08f;
+                feature.shoreWidth = 1.4f;
+                feature.waterSurfaceHeight = -0.35f;
                 break;
         }
     }
 
     private TerrainFeatureType PickFeatureType(System.Random random)
     {
-        float total = hillWeight + mountainWeight + terraceWeight + basinWeight;
+        float total = hillWeight + mountainWeight + terraceWeight + basinWeight + lakeWeight;
 
         if (total <= 0f)
         {
@@ -745,9 +844,16 @@ public sealed class IslandGenerator : MonoBehaviour
 
         value -= mountainWeight;
 
-        return value < terraceWeight
-            ? TerrainFeatureType.Terrace
-            : TerrainFeatureType.Basin;
+        if (value < terraceWeight)
+        {
+            return TerrainFeatureType.Terrace;
+        }
+
+        value -= terraceWeight;
+
+        return value < basinWeight
+            ? TerrainFeatureType.Basin
+            : TerrainFeatureType.Lake;
     }
 
     private void RemoveDetachedComponents(List<GeneratedChunkMesh> generatedChunks)
@@ -1255,7 +1361,7 @@ public sealed class TerrainFeatureDrawer : PropertyDrawer
 
     public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
     {
-        return EditorGUIUtility.singleLineHeight * 9f + VerticalSpacing * 8f;
+        return EditorGUIUtility.singleLineHeight * 11f + VerticalSpacing * 10f;
     }
 
     public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
@@ -1269,6 +1375,8 @@ public sealed class TerrainFeatureDrawer : PropertyDrawer
         SerializedProperty plateauRadiusProperty = property.FindPropertyRelative("plateauRadius");
         SerializedProperty shapeNoiseFrequencyProperty = property.FindPropertyRelative("shapeNoiseFrequency");
         SerializedProperty shapeNoiseStrengthProperty = property.FindPropertyRelative("shapeNoiseStrength");
+        SerializedProperty shoreWidthProperty = property.FindPropertyRelative("shoreWidth");
+        SerializedProperty waterSurfaceHeightProperty = property.FindPropertyRelative("waterSurfaceHeight");
 
         if (radiusProperty.floatValue <= 0f || sharpnessProperty.floatValue <= 0f)
         {
@@ -1303,6 +1411,10 @@ public sealed class TerrainFeatureDrawer : PropertyDrawer
         EditorGUI.PropertyField(line, shapeNoiseFrequencyProperty);
         line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
         EditorGUI.PropertyField(line, shapeNoiseStrengthProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, shoreWidthProperty);
+        line.y += EditorGUIUtility.singleLineHeight + VerticalSpacing;
+        EditorGUI.PropertyField(line, waterSurfaceHeightProperty);
 
         EditorGUI.EndProperty();
     }
@@ -1321,6 +1433,8 @@ public sealed class TerrainFeatureDrawer : PropertyDrawer
         property.FindPropertyRelative("plateauRadius").floatValue = feature.plateauRadius;
         property.FindPropertyRelative("shapeNoiseFrequency").floatValue = feature.shapeNoiseFrequency;
         property.FindPropertyRelative("shapeNoiseStrength").floatValue = feature.shapeNoiseStrength;
+        property.FindPropertyRelative("shoreWidth").floatValue = feature.shoreWidth;
+        property.FindPropertyRelative("waterSurfaceHeight").floatValue = feature.waterSurfaceHeight;
     }
 }
 
