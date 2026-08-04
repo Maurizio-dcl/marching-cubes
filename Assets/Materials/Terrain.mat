@@ -36,6 +36,10 @@ Material:
         m_Texture: {fileID: 2800000, guid: 5b0abe720a2f545dcaf89e001001b696, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
+    - _WaterTopTex:
+        m_Texture: {fileID: 2800000, guid: 797cb3558fd32485493ae2a1ffd21c16, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
     - _BlendWidth: 0.1
@@ -49,6 +53,7 @@ Material:
     - _TextureScale: 1
     - _TriplanarSharpness: 4
     - _UseDownTexture: 0
+    - _WaterTopShoreWidth: 0.5
     m_Colors:
     - _Color: {r: 1, g: 1, b: 1, a: 1}
     - _DownColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}

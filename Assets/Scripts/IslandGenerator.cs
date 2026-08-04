@@ -40,24 +40,41 @@ public struct TerrainFeature
 
 public readonly struct GeneratedWaterBody
 {
-    public GeneratedWaterBody(Vector2 localPosition, float radius, float shoreWidth, float surfaceHeight)
+    public GeneratedWaterBody(
+        Vector2 localPosition,
+        float radius,
+        float shoreWidth,
+        float surfaceHeight,
+        float shapeNoiseFrequency,
+        float shapeNoiseStrength)
     {
         LocalPosition = localPosition;
         Radius = radius;
         ShoreWidth = shoreWidth;
         SurfaceHeight = surfaceHeight;
+        ShapeNoiseFrequency = shapeNoiseFrequency;
+        ShapeNoiseStrength = shapeNoiseStrength;
     }
 
     public Vector2 LocalPosition { get; }
     public float Radius { get; }
     public float ShoreWidth { get; }
     public float SurfaceHeight { get; }
+    public float ShapeNoiseFrequency { get; }
+    public float ShapeNoiseStrength { get; }
 }
 
 [ExecuteAlways]
 public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 {
     private const string ChunkObjectNamePrefix = "Island Chunk ";
+    private const int MaxTerrainWaterBodyShaderCount = 16;
+    private static readonly int TerrainWaterBodyCountId = Shader.PropertyToID("_TerrainWaterBodyCount");
+    private static readonly int TerrainWaterBodiesId = Shader.PropertyToID("_TerrainWaterBodies");
+    private static readonly int TerrainWaterBodyShapeDataId = Shader.PropertyToID("_TerrainWaterBodyShapeData");
+    private static readonly int TerrainWaterWorldToIslandId = Shader.PropertyToID("_TerrainWaterWorldToIsland");
+    private static readonly int TerrainWaterIslandCenterId = Shader.PropertyToID("_TerrainWaterIslandCenter");
+    private static readonly int TerrainWaterNoiseSeedOffsetsId = Shader.PropertyToID("_TerrainWaterNoiseSeedOffsets");
 
     [Header("Chunk Grid")]
     [SerializeField] private int seed = 12345;
@@ -136,8 +153,11 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private readonly List<GameObject> _chunkObjects = new();
     private readonly List<Mesh> _meshes = new();
+    private readonly Vector4[] _terrainWaterBodyShaderData = new Vector4[MaxTerrainWaterBodyShaderCount];
+    private readonly Vector4[] _terrainWaterBodyShapeShaderData = new Vector4[MaxTerrainWaterBodyShaderCount];
     private TerrainFeature[] _features = System.Array.Empty<TerrainFeature>();
     private GeneratedWaterBody[] _waterBodies = System.Array.Empty<GeneratedWaterBody>();
+    private MaterialPropertyBlock _terrainPropertyBlock;
     private Material _defaultIslandMaterial;
     private Material _defaultGrassMaterial;
     private float _totalSize;
@@ -154,7 +174,10 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         if (ShouldAutoRegenerate())
         {
             RequestRefreshIslandPreview();
+            return;
         }
+
+        RefreshTerrainWaterBodyRenderers();
     }
 
     private void OnValidate()
@@ -172,7 +195,10 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         if (ShouldAutoRegenerate())
         {
             RequestRefreshIslandPreview();
+            return;
         }
+
+        RefreshTerrainWaterBodyRenderers();
     }
 
     private void OnDisable()
@@ -587,6 +613,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             TerrainGrassRenderer grassRenderer = chunkObject.AddComponent<TerrainGrassRenderer>();
             meshFilter.sharedMesh = mesh;
             meshRenderer.sharedMaterial = material;
+            ApplyTerrainWaterBodies(meshRenderer);
             RebuildGrass(mesh, meshFilter, meshRenderer, grassRenderer);
 
             _meshes.Add(mesh);
@@ -628,12 +655,86 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
                     feature.position,
                     feature.radius,
                     feature.shoreWidth,
-                    feature.waterSurfaceHeight));
+                    feature.waterSurfaceHeight,
+                    feature.shapeNoiseFrequency,
+                    feature.shapeNoiseStrength));
             }
         }
 
         _features = features.ToArray();
         _waterBodies = waterBodies.ToArray();
+        UpdateTerrainWaterBodyShaderData();
+    }
+
+    private void UpdateTerrainWaterBodyShaderData()
+    {
+        int count = Mathf.Min(_waterBodies.Length, MaxTerrainWaterBodyShaderCount);
+
+        for (int i = 0; i < count; i++)
+        {
+            GeneratedWaterBody body = _waterBodies[i];
+            float waterSurfaceY = transform.TransformPoint(new Vector3(
+                _islandCenter.x,
+                _islandCenter.y + body.SurfaceHeight,
+                _islandCenter.z)).y;
+            _terrainWaterBodyShaderData[i] = new Vector4(
+                body.LocalPosition.x,
+                body.LocalPosition.y,
+                Mathf.Max(0.001f, body.Radius),
+                waterSurfaceY);
+            _terrainWaterBodyShapeShaderData[i] = new Vector4(
+                Mathf.Max(0f, body.ShapeNoiseFrequency),
+                Mathf.Clamp01(body.ShapeNoiseStrength),
+                0f,
+                0f);
+        }
+
+        for (int i = count; i < MaxTerrainWaterBodyShaderCount; i++)
+        {
+            _terrainWaterBodyShaderData[i] = Vector4.zero;
+            _terrainWaterBodyShapeShaderData[i] = Vector4.zero;
+        }
+    }
+
+    private void ApplyTerrainWaterBodies(Renderer terrainRenderer)
+    {
+        if (terrainRenderer == null)
+        {
+            return;
+        }
+
+        int count = Mathf.Min(_waterBodies.Length, MaxTerrainWaterBodyShaderCount);
+        _terrainPropertyBlock ??= new MaterialPropertyBlock();
+        terrainRenderer.GetPropertyBlock(_terrainPropertyBlock);
+        _terrainPropertyBlock.SetInt(TerrainWaterBodyCountId, count);
+        _terrainPropertyBlock.SetVectorArray(TerrainWaterBodiesId, _terrainWaterBodyShaderData);
+        _terrainPropertyBlock.SetVectorArray(TerrainWaterBodyShapeDataId, _terrainWaterBodyShapeShaderData);
+        _terrainPropertyBlock.SetMatrix(TerrainWaterWorldToIslandId, transform.worldToLocalMatrix);
+        _terrainPropertyBlock.SetVector(TerrainWaterIslandCenterId, new Vector4(_islandCenter.x, _islandCenter.z, 0f, 0f));
+        _terrainPropertyBlock.SetVector(
+            TerrainWaterNoiseSeedOffsetsId,
+            new Vector4(SeedOffset(53), SeedOffset(59), 0f, 0f));
+        terrainRenderer.SetPropertyBlock(_terrainPropertyBlock);
+        _terrainPropertyBlock.Clear();
+    }
+
+    private void RefreshTerrainWaterBodyRenderers()
+    {
+        InitializeGrid();
+        GenerateFeatures();
+
+        for (int i = 0; i < transform.childCount; i++)
+        {
+            Transform child = transform.GetChild(i);
+
+            if (!child.name.StartsWith(ChunkObjectNamePrefix)
+                || !child.TryGetComponent(out MeshRenderer meshRenderer))
+            {
+                continue;
+            }
+
+            ApplyTerrainWaterBodies(meshRenderer);
+        }
     }
 
     private void GenerateWater()
