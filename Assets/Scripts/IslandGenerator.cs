@@ -131,7 +131,8 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
     [SerializeField] private bool generateWater = true;
 
     [Header("LOD and Scheduling")]
-    [SerializeField] private bool enableChunkLod = true;
+    [SerializeField, Tooltip("Runtime only. Editor previews are always generated at full terrain density.")]
+    private bool enableChunkLod = true;
     [SerializeField, Min(0)] private int recentlyVisibleFrameHold = 90;
     [SerializeField, Min(1)] private int maxChunkBuildsPerFrame = 2;
     [SerializeField] private Transform lodFocus;
@@ -384,6 +385,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
     public float TotalSize => _totalSize;
     public Bounds WorldBounds => new((Vector3)_gridOrigin + Vector3.one * (_totalSize * 0.5f), Vector3.one * _totalSize);
     public GeneratedWaterBody[] WaterBodies => _waterBodies;
+    private bool IsChunkLodActive => enableChunkLod && Application.isPlaying;
 
     public float EvaluateLocalRadius(Vector3 islandLocalPosition)
     {
@@ -626,8 +628,8 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
     {
         Material material = islandMaterial != null ? islandMaterial : GetDefaultIslandMaterial();
         List<GeneratedChunkMesh> generatedChunks = new(chunksPerAxis * chunksPerAxis * chunksPerAxis);
-        Camera camera = ResolveLodCamera();
-        Vector3 focus = ResolveLodFocus(camera);
+        Camera camera = IsChunkLodActive ? ResolveLodCamera() : null;
+        Vector3 focus = IsChunkLodActive ? ResolveLodFocus(camera) : Vector3.zero;
         _lodSelector = new TerrainLodSelector(lodLevels, recentlyVisibleFrameHold);
 
         for (int z = 0; z < chunksPerAxis; z++)
@@ -643,7 +645,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
                     Vector3Int coordinate = new(x, y, z);
                     Bounds bounds = new((Vector3)chunkPosition + Vector3.one * (chunkSize * 0.5f), Vector3.one * chunkSize);
                     TerrainChunkRuntimeData chunkData = new(new TerrainChunkId(_runtimeIslandId, coordinate), chunkPosition, bounds);
-                    int lod = enableChunkLod
+                    int lod = IsChunkLodActive
                         ? SelectInitialLod(chunkData, camera, focus)
                         : 0;
                     chunkData.DesiredLod = lod;
@@ -727,7 +729,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private int GetTerrainDensityForLod(int lod)
     {
-        if (!enableChunkLod || _lodSelector == null)
+        if (!IsChunkLodActive || _lodSelector == null)
         {
             return density;
         }
@@ -760,7 +762,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             for (int i = 0; i < _terrainChunks.Count; i++)
             {
                 TerrainChunkRuntimeData chunk = _terrainChunks[i];
-                TerrainLodDecision decision = enableChunkLod
+                TerrainLodDecision decision = IsChunkLodActive
                     ? _lodSelector.Evaluate(chunk, camera, _frustumPlanes, focus, Time.frameCount)
                     : new TerrainLodDecision(0, true, true, true, true, 0f);
 
@@ -840,7 +842,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
         using (IslandProfiler.BuildChunk.Auto())
         {
-            int lod = enableChunkLod ? chunk.DesiredLod : 0;
+            int lod = IsChunkLodActive ? chunk.DesiredLod : 0;
             int sampleDensity = GetTerrainDensityForLod(lod);
             Chunk rebuiltChunk = new(chunk.Origin, chunkSize, sampleDensity, SampleDensity);
             Mesh mesh = chunk.Mesh;
