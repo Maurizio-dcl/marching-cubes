@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using DefaultNamespace.Terrain;
 using UnityEngine;
 
 namespace DefaultNamespace.Water
@@ -45,6 +46,18 @@ namespace DefaultNamespace.Water
             float chunkWorldSize,
             IReadOnlyList<LakeWaterBody> lakes)
         {
+            using (IslandProfiler.WaterInitialize.Auto())
+            {
+                InitializeInternal(terrain, chunksPerAxis, chunkWorldSize, lakes);
+            }
+        }
+
+        private void InitializeInternal(
+            ITerrainDensityField terrain,
+            int chunksPerAxis,
+            float chunkWorldSize,
+            IReadOnlyList<LakeWaterBody> lakes)
+        {
             _terrain = terrain;
             _outflowConsumer = outflowConsumerComponent as IWaterOutflowConsumer;
 
@@ -68,6 +81,46 @@ namespace DefaultNamespace.Water
             WaterLakeInitializer.Initialize(_grid, _terrain.WorldBounds, lakes);
             MarkAllChunksDirtyAndActive();
             RebuildDirtyMeshes();
+        }
+
+        public void SetChunkRuntimeState(
+            Vector2Int coordinate,
+            bool renderAllowed,
+            bool simulationAllowed,
+            int meshUpdateIntervalFrames,
+            int simulationIntervalFrames)
+        {
+            if (_grid == null || _chunks == null)
+            {
+                return;
+            }
+
+            if (coordinate.x < 0 || coordinate.y < 0 || coordinate.x >= _grid.ChunksPerAxis || coordinate.y >= _grid.ChunksPerAxis)
+            {
+                return;
+            }
+
+            WaterChunk chunk = _chunks[coordinate.x + coordinate.y * _grid.ChunksPerAxis];
+            bool renderChanged = chunk.IsRenderAllowed != renderAllowed;
+            chunk.IsRenderAllowed = renderAllowed;
+            chunk.IsSimulationAllowed = simulationAllowed;
+            chunk.MeshUpdateIntervalFrames = Mathf.Max(1, meshUpdateIntervalFrames);
+            chunk.SimulationIntervalFrames = Mathf.Max(1, simulationIntervalFrames);
+
+            if (chunk.MeshRenderer != null)
+            {
+                chunk.MeshRenderer.enabled = renderAllowed;
+            }
+
+            if (!simulationAllowed)
+            {
+                chunk.IsActive = false;
+            }
+
+            if (renderChanged && renderAllowed)
+            {
+                chunk.IsMeshDirty = true;
+            }
         }
 
         public void AddSource(WaterSource source)
@@ -143,6 +196,14 @@ namespace DefaultNamespace.Water
         }
 
         private void Simulate(float step)
+        {
+            using (IslandProfiler.WaterSimulate.Auto())
+            {
+                SimulateInternal(step);
+            }
+        }
+
+        private void SimulateInternal(float step)
         {
             int substeps = Mathf.Max(1, settings.simulationSubsteps);
             float substep = step / substeps;
@@ -321,7 +382,7 @@ namespace DefaultNamespace.Water
                 for (int x = Mathf.Max(0, chunkX - 1); x <= Mathf.Min(chunkCount - 1, chunkX + 1); x++)
                 {
                     WaterChunk chunk = _chunks[x + z * chunkCount];
-                    chunk.IsActive = true;
+                    chunk.IsActive = chunk.IsSimulationAllowed;
                     chunk.IsMeshDirty = true;
                 }
             }
@@ -339,7 +400,12 @@ namespace DefaultNamespace.Water
             {
                 WaterChunk chunk = _chunks[i];
 
-                if (!chunk.IsActive)
+                if (!chunk.IsActive || !chunk.IsSimulationAllowed)
+                {
+                    continue;
+                }
+
+                if (Time.frameCount - chunk.LastSimulationFrame < chunk.SimulationIntervalFrames)
                 {
                     continue;
                 }
@@ -352,6 +418,7 @@ namespace DefaultNamespace.Water
                 maxX = Mathf.Max(maxX, chunkMaxX);
                 minZ = Mathf.Min(minZ, chunkMinZ);
                 maxZ = Mathf.Max(maxZ, chunkMaxZ);
+                chunk.LastSimulationFrame = Time.frameCount;
                 found = true;
             }
 
@@ -394,7 +461,7 @@ namespace DefaultNamespace.Water
                 for (int x = Mathf.Max(0, minChunkX - 1); x <= Mathf.Min(_grid.ChunksPerAxis - 1, maxChunkX + 1); x++)
                 {
                     WaterChunk chunk = _chunks[x + z * _grid.ChunksPerAxis];
-                    chunk.IsActive = true;
+                    chunk.IsActive = chunk.IsSimulationAllowed;
                     chunk.IsMeshDirty = true;
                     chunk.IsSimulationDirty = true;
                 }
@@ -412,13 +479,23 @@ namespace DefaultNamespace.Water
             {
                 WaterChunk chunk = _chunks[i];
 
-                if (!chunk.IsMeshDirty || chunk.Mesh == null)
+                if (!chunk.IsMeshDirty || chunk.Mesh == null || !chunk.IsRenderAllowed)
                 {
                     continue;
                 }
 
-                _meshBuilder.Build(chunk, chunk.Mesh);
+                if (Time.frameCount - chunk.LastMeshFrame < chunk.MeshUpdateIntervalFrames)
+                {
+                    continue;
+                }
+
+                using (IslandProfiler.WaterMeshBuild.Auto())
+                {
+                    _meshBuilder.Build(chunk, chunk.Mesh);
+                }
+
                 chunk.IsMeshDirty = false;
+                chunk.LastMeshFrame = Time.frameCount;
             }
         }
 

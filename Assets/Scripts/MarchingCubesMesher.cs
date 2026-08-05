@@ -33,6 +33,10 @@ namespace DefaultNamespace
             private readonly List<Vector3> _vertices = new();
             private readonly List<int> _triangles = new();
             private readonly Dictionary<EdgeKey, int> _vertexIndicesByEdge = new();
+            private readonly Vector3[] _cornerPositions = new Vector3[8];
+            private readonly float[] _cornerValues = new float[8];
+            private readonly bool[] _insideCorners = new bool[8];
+            private readonly int[] _edgeVertexIndices = new int[12];
             private int _nextCellIndex;
 
             public Builder(Chunk chunk, float isoLevel, bool interpolate)
@@ -71,7 +75,11 @@ namespace DefaultNamespace
                     _vertices,
                     _triangles,
                     _vertexIndicesByEdge,
-                    _interpolate);
+                    _interpolate,
+                    _cornerPositions,
+                    _cornerValues,
+                    _insideCorners,
+                    _edgeVertexIndices);
 
                 return true;
             }
@@ -97,12 +105,12 @@ namespace DefaultNamespace
             List<Vector3> vertices,
             List<int> triangles,
             Dictionary<EdgeKey, int> vertexIndicesByEdge,
-            bool interpolate)
+            bool interpolate,
+            Vector3[] positions,
+            float[] values,
+            bool[] inside,
+            int[] edgeVertexIndices)
         {
-            Vector3[] positions = new Vector3[8];
-            float[] values = new float[8];
-            bool[] inside = new bool[8];
-
             int caseIndex = 0;
 
             for (int i = 0; i < CornerOffsets.Length; i++)
@@ -124,8 +132,6 @@ namespace DefaultNamespace
             {
                 return;
             }
-
-            int[] edgeVertexIndices = new int[12];
 
             for (int i = 0; i < edgeVertexIndices.Length; i++)
             {

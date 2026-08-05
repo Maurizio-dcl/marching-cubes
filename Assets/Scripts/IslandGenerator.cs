@@ -1,4 +1,5 @@
 using DefaultNamespace;
+using DefaultNamespace.Terrain;
 using DefaultNamespace.Water;
 using System.Collections.Generic;
 using UnityEngine;
@@ -75,6 +76,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
     private static readonly int TerrainWaterWorldToIslandId = Shader.PropertyToID("_TerrainWaterWorldToIsland");
     private static readonly int TerrainWaterIslandCenterId = Shader.PropertyToID("_TerrainWaterIslandCenter");
     private static readonly int TerrainWaterNoiseSeedOffsetsId = Shader.PropertyToID("_TerrainWaterNoiseSeedOffsets");
+    private static int s_nextRuntimeIslandId = 1;
 
     [Header("Chunk Grid")]
     [SerializeField] private int seed = 12345;
@@ -128,6 +130,21 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
     [Header("Water")]
     [SerializeField] private bool generateWater = true;
 
+    [Header("LOD and Scheduling")]
+    [SerializeField] private bool enableChunkLod = true;
+    [SerializeField, Min(0)] private int recentlyVisibleFrameHold = 90;
+    [SerializeField, Min(1)] private int maxChunkBuildsPerFrame = 2;
+    [SerializeField] private Transform lodFocus;
+    [SerializeField] private TerrainLodLevel[] lodLevels =
+    {
+        new() { enterDistance = 28f, exitDistance = 34f, terrainCellsPerAxis = 16, waterCellsPerTerrainChunkAxis = 32, meshUpdateIntervalFrames = 1, simulationIntervalFrames = 1, simulateWater = true, renderWater = true, castShadows = true },
+        new() { enterDistance = 54f, exitDistance = 64f, terrainCellsPerAxis = 8, waterCellsPerTerrainChunkAxis = 16, meshUpdateIntervalFrames = 8, simulationIntervalFrames = 2, simulateWater = true, renderWater = true, castShadows = false },
+        new() { enterDistance = 96f, exitDistance = 112f, terrainCellsPerAxis = 4, waterCellsPerTerrainChunkAxis = 8, meshUpdateIntervalFrames = 24, simulationIntervalFrames = 8, simulateWater = false, renderWater = false, castShadows = false }
+    };
+
+    [Header("Debug")]
+    [SerializeField] private IslandChunkDebugSettings chunkDebug = new();
+
     [Header("Grass")]
     [SerializeField] private bool renderGrass;
     [SerializeField] private ComputeShader grassComputeShader;
@@ -153,6 +170,9 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private readonly List<GameObject> _chunkObjects = new();
     private readonly List<Mesh> _meshes = new();
+    private readonly List<TerrainChunkRuntimeData> _terrainChunks = new();
+    private readonly Dictionary<Vector3Int, TerrainChunkRuntimeData> _terrainChunksByCoordinate = new();
+    private readonly IslandWorkScheduler _workScheduler = new();
     private readonly Vector4[] _terrainWaterBodyShaderData = new Vector4[MaxTerrainWaterBodyShaderCount];
     private readonly Vector4[] _terrainWaterBodyShapeShaderData = new Vector4[MaxTerrainWaterBodyShaderCount];
     private TerrainFeature[] _features = System.Array.Empty<TerrainFeature>();
@@ -160,6 +180,10 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
     private MaterialPropertyBlock _terrainPropertyBlock;
     private Material _defaultIslandMaterial;
     private Material _defaultGrassMaterial;
+    private WaterSimulation _waterSimulation;
+    private TerrainLodSelector _lodSelector;
+    private Plane[] _frustumPlanes = new Plane[6];
+    private int _runtimeIslandId;
     private float _totalSize;
     private Vector3Int _gridOrigin;
     private Vector3 _islandCenter;
@@ -169,6 +193,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private void OnEnable()
     {
+        EnsureRuntimeIslandId();
         ResolveDefaultGrassAssets();
 
         if (ShouldAutoRegenerate())
@@ -182,6 +207,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private void OnValidate()
     {
+        EnsureRuntimeIslandId();
         chunksPerAxis = Mathf.Max(1, chunksPerAxis);
         chunkSize = Mathf.Max(1, chunkSize);
         featureRadiusRange = SortMinMax(featureRadiusRange, 0.001f);
@@ -214,7 +240,13 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private void Start()
     {
+        EnsureRuntimeIslandId();
         RequestRefreshIslandPreview();
+    }
+
+    private void Update()
+    {
+        UpdateLodAndScheduledWork();
     }
 
     [ContextMenu("Regenerate Island")]
@@ -322,6 +354,10 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
         _chunkObjects.Clear();
         _meshes.Clear();
+        _terrainChunks.Clear();
+        _terrainChunksByCoordinate.Clear();
+        _workScheduler.Clear();
+        _waterSimulation = null;
         _features = System.Array.Empty<TerrainFeature>();
     }
 
@@ -513,12 +549,15 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private void RefreshIslandPreview()
     {
-        ApplyBoundsConstraints();
-        ClearIsland();
-        InitializeGrid();
-        GenerateFeatures();
-        GenerateChunks();
-        GenerateWater();
+        using (IslandProfiler.Refresh.Auto())
+        {
+            ApplyBoundsConstraints();
+            ClearIsland();
+            InitializeGrid();
+            GenerateFeatures();
+            GenerateChunks();
+            GenerateWater();
+        }
     }
 
     private void RequestRefreshIslandPreview()
@@ -557,6 +596,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private void InitializeGrid()
     {
+        EnsureRuntimeIslandId();
         _totalSize = chunksPerAxis * chunkSize;
         int origin = Mathf.FloorToInt(_totalSize * -0.5f);
         _gridOrigin = new Vector3Int(origin, origin, origin);
@@ -564,10 +604,31 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         _islandCenter.y = baseSurfaceHeight;
     }
 
+    private void EnsureRuntimeIslandId()
+    {
+        if (_runtimeIslandId != 0)
+        {
+            return;
+        }
+
+        _runtimeIslandId = s_nextRuntimeIslandId++;
+    }
+
     private void GenerateChunks()
+    {
+        using (IslandProfiler.GenerateChunks.Auto())
+        {
+            GenerateChunksInternal();
+        }
+    }
+
+    private void GenerateChunksInternal()
     {
         Material material = islandMaterial != null ? islandMaterial : GetDefaultIslandMaterial();
         List<GeneratedChunkMesh> generatedChunks = new(chunksPerAxis * chunksPerAxis * chunksPerAxis);
+        Camera camera = ResolveLodCamera();
+        Vector3 focus = ResolveLodFocus(camera);
+        _lodSelector = new TerrainLodSelector(lodLevels, recentlyVisibleFrameHold);
 
         for (int z = 0; z < chunksPerAxis; z++)
         {
@@ -579,12 +640,29 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
                         x * chunkSize,
                         y * chunkSize,
                         z * chunkSize);
-                    Chunk chunk = new(chunkPosition, chunkSize, density, SampleDensity);
+                    Vector3Int coordinate = new(x, y, z);
+                    Bounds bounds = new((Vector3)chunkPosition + Vector3.one * (chunkSize * 0.5f), Vector3.one * chunkSize);
+                    TerrainChunkRuntimeData chunkData = new(new TerrainChunkId(_runtimeIslandId, coordinate), chunkPosition, bounds);
+                    int lod = enableChunkLod
+                        ? SelectInitialLod(chunkData, camera, focus)
+                        : 0;
+                    chunkData.DesiredLod = lod;
+                    chunkData.CurrentLod = lod;
+                    _terrainChunks.Add(chunkData);
+                    _terrainChunksByCoordinate.Add(coordinate, chunkData);
+
+                    Chunk chunk = new(chunkPosition, chunkSize, GetTerrainDensityForLod(lod), SampleDensity);
+                    chunkData.Chunk = chunk;
                     Mesh mesh = new();
                     mesh.name = $"Island Chunk {x} {y} {z}";
-                    MarchingCubesMesher.Generate(chunk, isoLevel, mesh, interpolate);
+                    using (IslandProfiler.MeshExtraction.Auto())
+                    {
+                        MarchingCubesMesher.Generate(chunk, isoLevel, mesh, interpolate);
+                    }
+                    chunkData.Mesh = mesh;
+                    chunkData.ClearDirty();
 
-                    generatedChunks.Add(new GeneratedChunkMesh(chunkPosition, mesh));
+                    generatedChunks.Add(new GeneratedChunkMesh(chunkPosition, mesh, chunkData));
                 }
             }
         }
@@ -596,7 +674,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             GeneratedChunkMesh generatedChunk = generatedChunks[i];
             Mesh mesh = generatedChunk.Mesh;
 
-            if (mesh == null || mesh.triangles.Length == 0)
+            if (mesh == null || mesh.GetIndexCount(0) == 0)
             {
                 DestroyGeneratedObject(mesh);
                 continue;
@@ -608,11 +686,19 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             chunkObject.transform.localRotation = Quaternion.identity;
             chunkObject.transform.localScale = Vector3.one;
 
-            MeshFilter meshFilter = chunkObject.AddComponent<MeshFilter>();
-            MeshRenderer meshRenderer = chunkObject.AddComponent<MeshRenderer>();
-            TerrainGrassRenderer grassRenderer = chunkObject.AddComponent<TerrainGrassRenderer>();
+            TerrainChunkView chunkView = chunkObject.AddComponent<TerrainChunkView>();
+            chunkView.Initialize(generatedChunk.Data);
+            generatedChunk.Data.View = chunkView;
+            IslandChunkDebugDrawer debugDrawer = chunkObject.AddComponent<IslandChunkDebugDrawer>();
+            debugDrawer.Initialize(chunkView, chunkDebug);
+            MeshFilter meshFilter = chunkView.MeshFilter;
+            MeshRenderer meshRenderer = chunkView.MeshRenderer;
+            TerrainGrassRenderer grassRenderer = chunkView.GrassRenderer;
             meshFilter.sharedMesh = mesh;
             meshRenderer.sharedMaterial = material;
+            meshRenderer.shadowCastingMode = _lodSelector.GetLevel(generatedChunk.Data.CurrentLod).castShadows
+                ? UnityEngine.Rendering.ShadowCastingMode.On
+                : UnityEngine.Rendering.ShadowCastingMode.Off;
             ApplyTerrainWaterBodies(meshRenderer);
             RebuildGrass(mesh, meshFilter, meshRenderer, grassRenderer);
 
@@ -621,7 +707,241 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         }
     }
 
+    private int SelectInitialLod(TerrainChunkRuntimeData chunk, Camera camera, Vector3 focus)
+    {
+        if (_lodSelector == null)
+        {
+            return 0;
+        }
+
+        if (camera != null)
+        {
+            GeometryUtility.CalculateFrustumPlanes(camera, _frustumPlanes);
+        }
+
+        TerrainLodDecision decision = _lodSelector.Evaluate(chunk, camera, _frustumPlanes, focus, Time.frameCount);
+        chunk.IsVisible = decision.Visible;
+        chunk.DistanceToCamera = decision.Distance;
+        return decision.Lod;
+    }
+
+    private int GetTerrainDensityForLod(int lod)
+    {
+        if (!enableChunkLod || _lodSelector == null)
+        {
+            return density;
+        }
+
+        return Mathf.Clamp(_lodSelector.GetLevel(lod).terrainCellsPerAxis, 1, density);
+    }
+
+    private void UpdateLodAndScheduledWork()
+    {
+        if (!Application.isPlaying || _terrainChunks.Count == 0)
+        {
+            return;
+        }
+
+        using (IslandProfiler.LODUpdate.Auto())
+        {
+            Camera camera = ResolveLodCamera();
+            Vector3 focus = ResolveLodFocus(camera);
+
+            if (_lodSelector == null)
+            {
+                _lodSelector = new TerrainLodSelector(lodLevels, recentlyVisibleFrameHold);
+            }
+
+            if (camera != null)
+            {
+                GeometryUtility.CalculateFrustumPlanes(camera, _frustumPlanes);
+            }
+
+            for (int i = 0; i < _terrainChunks.Count; i++)
+            {
+                TerrainChunkRuntimeData chunk = _terrainChunks[i];
+                TerrainLodDecision decision = enableChunkLod
+                    ? _lodSelector.Evaluate(chunk, camera, _frustumPlanes, focus, Time.frameCount)
+                    : new TerrainLodDecision(0, true, true, true, true, 0f);
+
+                chunk.DistanceToCamera = decision.Distance;
+                chunk.IsVisible = decision.Visible;
+
+                if (decision.Visible)
+                {
+                    chunk.LastVisibleFrame = Time.frameCount;
+                }
+
+                chunk.WasRecentlyVisible = decision.Render && !decision.Visible;
+                ApplyChunkVisibility(chunk, decision);
+
+                if (chunk.DesiredLod != decision.Lod)
+                {
+                    chunk.DesiredLod = decision.Lod;
+                    chunk.MarkDirty(chunk.Bounds, false);
+                }
+
+                if (chunk.IsDirty)
+                {
+                    _workScheduler.Enqueue(chunk);
+                }
+            }
+
+            int budget = Mathf.Max(1, maxChunkBuildsPerFrame);
+
+            for (int i = 0; i < budget; i++)
+            {
+                TerrainChunkRuntimeData chunk = _workScheduler.DequeueHighestPriority();
+
+                if (chunk == null)
+                {
+                    break;
+                }
+
+                RebuildTerrainChunk(chunk);
+            }
+        }
+    }
+
+    private void ApplyChunkVisibility(TerrainChunkRuntimeData chunk, TerrainLodDecision decision)
+    {
+        if (chunk.View == null)
+        {
+            return;
+        }
+
+        chunk.View.ApplyVisibility(decision.Render);
+
+        if (chunk.View.MeshRenderer != null)
+        {
+            chunk.View.MeshRenderer.shadowCastingMode = _lodSelector.GetLevel(decision.Lod).castShadows
+                ? UnityEngine.Rendering.ShadowCastingMode.On
+                : UnityEngine.Rendering.ShadowCastingMode.Off;
+        }
+
+        if (_waterSimulation != null)
+        {
+            TerrainLodLevel level = _lodSelector.GetLevel(decision.Lod);
+            _waterSimulation.SetChunkRuntimeState(
+                new Vector2Int(chunk.Id.Coordinate.x, chunk.Id.Coordinate.z),
+                decision.RenderWater,
+                decision.SimulateWater,
+                level.meshUpdateIntervalFrames,
+                level.simulationIntervalFrames);
+        }
+    }
+
+    private void RebuildTerrainChunk(TerrainChunkRuntimeData chunk)
+    {
+        if (chunk == null)
+        {
+            return;
+        }
+
+        using (IslandProfiler.BuildChunk.Auto())
+        {
+            int lod = enableChunkLod ? chunk.DesiredLod : 0;
+            int sampleDensity = GetTerrainDensityForLod(lod);
+            Chunk rebuiltChunk = new(chunk.Origin, chunkSize, sampleDensity, SampleDensity);
+            Mesh mesh = chunk.Mesh;
+
+            if (mesh == null)
+            {
+                mesh = new Mesh();
+                mesh.name = $"Island Chunk {chunk.Id.Coordinate.x} {chunk.Id.Coordinate.y} {chunk.Id.Coordinate.z}";
+                chunk.Mesh = mesh;
+                _meshes.Add(mesh);
+            }
+
+            using (IslandProfiler.MeshExtraction.Auto())
+            {
+                MarchingCubesMesher.Generate(rebuiltChunk, isoLevel, mesh, interpolate);
+            }
+
+            chunk.Chunk = rebuiltChunk;
+            chunk.CurrentLod = lod;
+            chunk.ClearDirty();
+
+            if (chunk.View != null)
+            {
+                chunk.View.ApplyMesh(mesh);
+                ApplyTerrainWaterBodies(chunk.View.MeshRenderer);
+                RebuildGrass(mesh, chunk.View.MeshFilter, chunk.View.MeshRenderer, chunk.View.GrassRenderer);
+            }
+            else if (mesh.GetIndexCount(0) > 0)
+            {
+                CreateTerrainChunkView(chunk, islandMaterial != null ? islandMaterial : GetDefaultIslandMaterial());
+            }
+        }
+    }
+
+    private void CreateTerrainChunkView(TerrainChunkRuntimeData chunk, Material material)
+    {
+        GameObject chunkObject = new($"Island Chunk {chunk.Id.Coordinate.x} {chunk.Id.Coordinate.y} {chunk.Id.Coordinate.z}");
+        chunkObject.transform.SetParent(transform, false);
+        chunkObject.transform.localPosition = chunk.Origin;
+        chunkObject.transform.localRotation = Quaternion.identity;
+        chunkObject.transform.localScale = Vector3.one;
+
+        TerrainChunkView chunkView = chunkObject.AddComponent<TerrainChunkView>();
+        chunkView.Initialize(chunk);
+        chunk.View = chunkView;
+
+        IslandChunkDebugDrawer debugDrawer = chunkObject.AddComponent<IslandChunkDebugDrawer>();
+        debugDrawer.Initialize(chunkView, chunkDebug);
+
+        chunkView.MeshFilter.sharedMesh = chunk.Mesh;
+        chunkView.MeshRenderer.sharedMaterial = material;
+        chunkView.MeshRenderer.shadowCastingMode = _lodSelector.GetLevel(chunk.CurrentLod).castShadows
+            ? UnityEngine.Rendering.ShadowCastingMode.On
+            : UnityEngine.Rendering.ShadowCastingMode.Off;
+        ApplyTerrainWaterBodies(chunkView.MeshRenderer);
+        RebuildGrass(chunk.Mesh, chunkView.MeshFilter, chunkView.MeshRenderer, chunkView.GrassRenderer);
+
+        _chunkObjects.Add(chunkObject);
+    }
+
+    private Camera ResolveLodCamera()
+    {
+        if (Camera.main != null)
+        {
+            return Camera.main;
+        }
+
+#if UNITY_EDITOR
+        if (!Application.isPlaying && SceneView.lastActiveSceneView != null)
+        {
+            return SceneView.lastActiveSceneView.camera;
+        }
+#endif
+
+        return null;
+    }
+
+    private Vector3 ResolveLodFocus(Camera camera)
+    {
+        if (lodFocus != null)
+        {
+            return lodFocus.position;
+        }
+
+        if (camera != null)
+        {
+            return camera.transform.position;
+        }
+
+        return transform.TransformPoint(_islandCenter);
+    }
+
     private void GenerateFeatures()
+    {
+        using (IslandProfiler.GenerateFeatures.Auto())
+        {
+            GenerateFeaturesInternal();
+        }
+    }
+
+    private void GenerateFeaturesInternal()
     {
         List<TerrainFeature> features = new(terrainFeatures.Count);
         List<GeneratedWaterBody> waterBodies = new(terrainFeatures.Count);
@@ -664,6 +984,48 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         _features = features.ToArray();
         _waterBodies = waterBodies.ToArray();
         UpdateTerrainWaterBodyShaderData();
+    }
+
+    public void NotifyTerrainModified(Bounds modifiedWorldBounds)
+    {
+        using (IslandProfiler.DirtyTerrain.Auto())
+        {
+            MarkTerrainDirty(modifiedWorldBounds, true);
+
+            if (_waterSimulation == null)
+            {
+                TryGetComponent(out _waterSimulation);
+            }
+
+            if (_waterSimulation != null)
+            {
+                _waterSimulation.NotifyTerrainChanged(modifiedWorldBounds);
+            }
+        }
+    }
+
+    public void MarkTerrainDirty(Bounds modifiedWorldBounds, bool isModification = false)
+    {
+        if (_terrainChunks.Count == 0)
+        {
+            return;
+        }
+
+        Bounds paddedBounds = modifiedWorldBounds;
+        paddedBounds.Expand(chunkSize / Mathf.Max(1f, density));
+
+        for (int i = 0; i < _terrainChunks.Count; i++)
+        {
+            TerrainChunkRuntimeData chunk = _terrainChunks[i];
+
+            if (!chunk.Bounds.Intersects(paddedBounds))
+            {
+                continue;
+            }
+
+            chunk.MarkDirty(paddedBounds, isModification);
+            _workScheduler.Enqueue(chunk);
+        }
     }
 
     private void UpdateTerrainWaterBodyShaderData()
@@ -752,6 +1114,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
                 existingWaterSimulation.Clear();
             }
 
+            _waterSimulation = null;
             return;
         }
 
@@ -760,6 +1123,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             waterSimulation = gameObject.AddComponent<WaterSimulation>();
         }
 
+        _waterSimulation = waterSimulation;
         LakeWaterBody[] lakes = new LakeWaterBody[_waterBodies.Length];
 
         for (int i = 0; i < _waterBodies.Length; i++)
@@ -1360,16 +1724,18 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 
     private struct GeneratedChunkMesh
     {
-        public GeneratedChunkMesh(Vector3Int position, Mesh mesh)
+        public GeneratedChunkMesh(Vector3Int position, Mesh mesh, TerrainChunkRuntimeData data)
         {
             Position = position;
             Mesh = mesh;
+            Data = data;
             FirstTriangleIndex = 0;
             TriangleCount = 0;
         }
 
         public Vector3Int Position { get; }
         public Mesh Mesh { get; }
+        public TerrainChunkRuntimeData Data { get; }
         public int FirstTriangleIndex { get; set; }
         public int TriangleCount { get; set; }
     }

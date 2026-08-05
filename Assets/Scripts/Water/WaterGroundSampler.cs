@@ -1,4 +1,5 @@
 using UnityEngine;
+using DefaultNamespace.Terrain;
 
 namespace DefaultNamespace.Water
 {
@@ -28,33 +29,36 @@ namespace DefaultNamespace.Water
 
         public void RecalculateCells(int minX, int maxX, int minZ, int maxZ)
         {
-            for (int z = minZ; z <= maxZ; z++)
+            using (IslandProfiler.WaterGroundSample.Auto())
             {
-                for (int x = minX; x <= maxX; x++)
+                for (int z = minZ; z <= maxZ; z++)
                 {
-                    int index = _grid.Index(x, z);
-                    bool hadGround = _grid.HasGround(index);
-                    float oldGround = _grid.GroundHeights[index];
-
-                    if (TrySampleGroundHeight(x, z, out float groundHeight))
+                    for (int x = minX; x <= maxX; x++)
                     {
-                        _grid.GroundHeights[index] = groundHeight;
-                        _grid.SetHasGround(index, true);
+                        int index = _grid.Index(x, z);
+                        bool hadGround = _grid.HasGround(index);
+                        float oldGround = _grid.GroundHeights[index];
 
-                        if (hadGround && groundHeight > oldGround)
+                        if (TrySampleGroundHeight(x, z, out float groundHeight))
                         {
-                            float displaced = Mathf.Min(_grid.WaterDepths[index], groundHeight - oldGround);
-                            _grid.WaterDepths[index] -= displaced;
+                            _grid.GroundHeights[index] = groundHeight;
+                            _grid.SetHasGround(index, true);
+
+                            if (hadGround && groundHeight > oldGround)
+                            {
+                                float displaced = Mathf.Min(_grid.WaterDepths[index], groundHeight - oldGround);
+                                _grid.WaterDepths[index] -= displaced;
+                                RedistributeDisplacedWater(x, z, displaced);
+                            }
+                        }
+                        else
+                        {
+                            float displaced = _grid.WaterDepths[index];
+                            _grid.SetHasGround(index, false);
+                            _grid.GroundHeights[index] = 0f;
+                            _grid.WaterDepths[index] = 0f;
                             RedistributeDisplacedWater(x, z, displaced);
                         }
-                    }
-                    else
-                    {
-                        float displaced = _grid.WaterDepths[index];
-                        _grid.SetHasGround(index, false);
-                        _grid.GroundHeights[index] = 0f;
-                        _grid.WaterDepths[index] = 0f;
-                        RedistributeDisplacedWater(x, z, displaced);
                     }
                 }
             }

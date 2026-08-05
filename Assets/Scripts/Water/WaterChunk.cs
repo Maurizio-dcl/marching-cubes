@@ -15,8 +15,14 @@ namespace DefaultNamespace.Water
         public Vector2Int Coordinate { get; }
         public Bounds Bounds { get; }
         public bool IsActive { get; set; }
+        public bool IsSimulationAllowed { get; set; } = true;
+        public bool IsRenderAllowed { get; set; } = true;
         public bool IsMeshDirty { get; set; }
         public bool IsSimulationDirty { get; set; }
+        public int SimulationIntervalFrames { get; set; } = 1;
+        public int MeshUpdateIntervalFrames { get; set; } = 1;
+        public int LastSimulationFrame { get; set; }
+        public int LastMeshFrame { get; set; }
         public Mesh Mesh { get; set; }
         public MeshFilter MeshFilter { get; set; }
         public MeshRenderer MeshRenderer { get; set; }
