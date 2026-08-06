@@ -9,6 +9,20 @@ namespace DefaultNamespace.Water
         public float Amount;
     }
 
+    public readonly struct WaterfallSource
+    {
+        public WaterfallSource(Vector3 position, Vector2 direction, float width)
+        {
+            Position = position;
+            Direction = direction;
+            Width = width;
+        }
+
+        public Vector3 Position { get; }
+        public Vector2 Direction { get; }
+        public float Width { get; }
+    }
+
     public interface IWaterOutflowConsumer
     {
         void ConsumeOutflows(WaterOutflow[] outflows, int count);

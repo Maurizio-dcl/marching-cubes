@@ -29,6 +29,10 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
     private static readonly int TerrainWaterBodyCountId = Shader.PropertyToID("_TerrainWaterBodyCount");
     private static readonly int TerrainWaterBodiesId = Shader.PropertyToID("_TerrainWaterBodies");
     private static readonly int TerrainWaterBodyShapeDataId = Shader.PropertyToID("_TerrainWaterBodyShapeData");
+    private static readonly int TerrainWaterRiverCountId = Shader.PropertyToID("_TerrainWaterRiverCount");
+    private static readonly int TerrainWaterRiversId = Shader.PropertyToID("_TerrainWaterRivers");
+    private static readonly int TerrainWaterRiverDataId = Shader.PropertyToID("_TerrainWaterRiverData");
+    private static readonly int TerrainWaterRiverShapeDataId = Shader.PropertyToID("_TerrainWaterRiverShapeData");
     private static readonly int TerrainWaterWorldToIslandId = Shader.PropertyToID("_TerrainWaterWorldToIsland");
     private static readonly int TerrainWaterIslandCenterId = Shader.PropertyToID("_TerrainWaterIslandCenter");
     private static readonly int TerrainWaterNoiseSeedOffsetsId = Shader.PropertyToID("_TerrainWaterNoiseSeedOffsets");
@@ -101,6 +105,10 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
         int waterBodyCount = 0,
         Vector4[] waterBodies = null,
         Vector4[] waterBodyShapeData = null,
+        int waterRiverCount = 0,
+        Vector4[] waterRivers = null,
+        Vector4[] waterRiverData = null,
+        Vector4[] waterRiverShapeData = null,
         Matrix4x4 waterWorldToIsland = default,
         Vector4 waterIslandCenter = default,
         Vector4 waterNoiseSeedOffsets = default)
@@ -206,11 +214,26 @@ public sealed class TerrainGrassRenderer : MonoBehaviour
                 ? terrainMaterial.GetFloat("_WaterTopShoreWidth")
                 : 0f);
         computeShader.SetInt(TerrainWaterBodyCountId, Mathf.Max(0, waterBodyCount));
+        computeShader.SetInt(TerrainWaterRiverCountId, Mathf.Max(0, waterRiverCount));
 
         if (waterBodyCount > 0 && waterBodies != null && waterBodyShapeData != null)
         {
             computeShader.SetVectorArray(TerrainWaterBodiesId, waterBodies);
             computeShader.SetVectorArray(TerrainWaterBodyShapeDataId, waterBodyShapeData);
+        }
+
+        if (waterRiverCount > 0
+            && waterRivers != null
+            && waterRiverData != null
+            && waterRiverShapeData != null)
+        {
+            computeShader.SetVectorArray(TerrainWaterRiversId, waterRivers);
+            computeShader.SetVectorArray(TerrainWaterRiverDataId, waterRiverData);
+            computeShader.SetVectorArray(TerrainWaterRiverShapeDataId, waterRiverShapeData);
+        }
+
+        if (waterBodyCount > 0 || waterRiverCount > 0)
+        {
             computeShader.SetMatrix(TerrainWaterWorldToIslandId, waterWorldToIsland);
             computeShader.SetVector(TerrainWaterIslandCenterId, waterIslandCenter);
             computeShader.SetVector(TerrainWaterNoiseSeedOffsetsId, waterNoiseSeedOffsets);

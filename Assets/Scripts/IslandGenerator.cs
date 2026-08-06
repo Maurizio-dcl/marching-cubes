@@ -147,9 +147,14 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
 {
     private const string ChunkObjectNamePrefix = "Island Chunk ";
     private const int MaxTerrainWaterBodyShaderCount = 16;
+    private const int MaxTerrainWaterRiverShaderCount = 16;
     private static readonly int TerrainWaterBodyCountId = Shader.PropertyToID("_TerrainWaterBodyCount");
     private static readonly int TerrainWaterBodiesId = Shader.PropertyToID("_TerrainWaterBodies");
     private static readonly int TerrainWaterBodyShapeDataId = Shader.PropertyToID("_TerrainWaterBodyShapeData");
+    private static readonly int TerrainWaterRiverCountId = Shader.PropertyToID("_TerrainWaterRiverCount");
+    private static readonly int TerrainWaterRiversId = Shader.PropertyToID("_TerrainWaterRivers");
+    private static readonly int TerrainWaterRiverDataId = Shader.PropertyToID("_TerrainWaterRiverData");
+    private static readonly int TerrainWaterRiverShapeDataId = Shader.PropertyToID("_TerrainWaterRiverShapeData");
     private static readonly int TerrainWaterWorldToIslandId = Shader.PropertyToID("_TerrainWaterWorldToIsland");
     private static readonly int TerrainWaterIslandCenterId = Shader.PropertyToID("_TerrainWaterIslandCenter");
     private static readonly int TerrainWaterNoiseSeedOffsetsId = Shader.PropertyToID("_TerrainWaterNoiseSeedOffsets");
@@ -257,6 +262,9 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
     private readonly IslandWorkScheduler _workScheduler = new();
     private readonly Vector4[] _terrainWaterBodyShaderData = new Vector4[MaxTerrainWaterBodyShaderCount];
     private readonly Vector4[] _terrainWaterBodyShapeShaderData = new Vector4[MaxTerrainWaterBodyShaderCount];
+    private readonly Vector4[] _terrainWaterRiverShaderData = new Vector4[MaxTerrainWaterRiverShaderCount];
+    private readonly Vector4[] _terrainWaterRiverData = new Vector4[MaxTerrainWaterRiverShaderCount];
+    private readonly Vector4[] _terrainWaterRiverShapeData = new Vector4[MaxTerrainWaterRiverShaderCount];
     private TerraceFeature[] _terraces = System.Array.Empty<TerraceFeature>();
     private BasinFeature[] _basins = System.Array.Empty<BasinFeature>();
     private LakeFeature[] _lakes = System.Array.Empty<LakeFeature>();
@@ -1144,6 +1152,7 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         _waterBodies = waterBodies.ToArray();
         _rivers = BuildRuntimeRivers(_lakes);
         UpdateTerrainWaterBodyShaderData();
+        UpdateTerrainWaterRiverShaderData();
     }
 
     public void NotifyTerrainModified(Bounds modifiedWorldBounds)
@@ -1218,6 +1227,46 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         }
     }
 
+    private void UpdateTerrainWaterRiverShaderData()
+    {
+        int count = Mathf.Min(_rivers.Length, MaxTerrainWaterRiverShaderCount);
+
+        for (int i = 0; i < count; i++)
+        {
+            GeneratedRiver river = _rivers[i];
+            float startSurfaceY = transform.TransformPoint(new Vector3(
+                _islandCenter.x,
+                _islandCenter.y + river.StartSurfaceHeight,
+                _islandCenter.z)).y;
+            float endSurfaceY = transform.TransformPoint(new Vector3(
+                _islandCenter.x,
+                _islandCenter.y + river.EndSurfaceHeight,
+                _islandCenter.z)).y;
+            _terrainWaterRiverShaderData[i] = new Vector4(
+                river.LocalStart.x,
+                river.LocalStart.y,
+                river.LocalEnd.x,
+                river.LocalEnd.y);
+            _terrainWaterRiverData[i] = new Vector4(
+                Mathf.Max(0.001f, river.Width),
+                startSurfaceY,
+                endSurfaceY,
+                0f);
+            _terrainWaterRiverShapeData[i] = new Vector4(
+                Mathf.Max(0f, river.MeanderFrequency),
+                Mathf.Clamp01(river.MeanderStrength),
+                0f,
+                0f);
+        }
+
+        for (int i = count; i < MaxTerrainWaterRiverShaderCount; i++)
+        {
+            _terrainWaterRiverShaderData[i] = Vector4.zero;
+            _terrainWaterRiverData[i] = Vector4.zero;
+            _terrainWaterRiverShapeData[i] = Vector4.zero;
+        }
+    }
+
     private void ApplyTerrainWaterBodies(Renderer terrainRenderer)
     {
         if (terrainRenderer == null)
@@ -1226,16 +1275,21 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
         }
 
         int count = Mathf.Min(_waterBodies.Length, MaxTerrainWaterBodyShaderCount);
+        int riverCount = Mathf.Min(_rivers.Length, MaxTerrainWaterRiverShaderCount);
         _terrainPropertyBlock ??= new MaterialPropertyBlock();
         terrainRenderer.GetPropertyBlock(_terrainPropertyBlock);
         _terrainPropertyBlock.SetInt(TerrainWaterBodyCountId, count);
         _terrainPropertyBlock.SetVectorArray(TerrainWaterBodiesId, _terrainWaterBodyShaderData);
         _terrainPropertyBlock.SetVectorArray(TerrainWaterBodyShapeDataId, _terrainWaterBodyShapeShaderData);
+        _terrainPropertyBlock.SetInt(TerrainWaterRiverCountId, riverCount);
+        _terrainPropertyBlock.SetVectorArray(TerrainWaterRiversId, _terrainWaterRiverShaderData);
+        _terrainPropertyBlock.SetVectorArray(TerrainWaterRiverDataId, _terrainWaterRiverData);
+        _terrainPropertyBlock.SetVectorArray(TerrainWaterRiverShapeDataId, _terrainWaterRiverShapeData);
         _terrainPropertyBlock.SetMatrix(TerrainWaterWorldToIslandId, transform.worldToLocalMatrix);
         _terrainPropertyBlock.SetVector(TerrainWaterIslandCenterId, new Vector4(_islandCenter.x, _islandCenter.z, 0f, 0f));
         _terrainPropertyBlock.SetVector(
             TerrainWaterNoiseSeedOffsetsId,
-            new Vector4(SeedOffset(53), SeedOffset(59), 0f, 0f));
+            new Vector4(SeedOffset(53), SeedOffset(59), SeedOffset(67), SeedOffset(71)));
         terrainRenderer.SetPropertyBlock(_terrainPropertyBlock);
         _terrainPropertyBlock.Clear();
     }
@@ -2023,9 +2077,13 @@ public sealed class IslandGenerator : MonoBehaviour, ITerrainDensityField
             Mathf.Min(_waterBodies.Length, MaxTerrainWaterBodyShaderCount),
             _terrainWaterBodyShaderData,
             _terrainWaterBodyShapeShaderData,
+            Mathf.Min(_rivers.Length, MaxTerrainWaterRiverShaderCount),
+            _terrainWaterRiverShaderData,
+            _terrainWaterRiverData,
+            _terrainWaterRiverShapeData,
             transform.worldToLocalMatrix,
             new Vector4(_islandCenter.x, _islandCenter.z, 0f, 0f),
-            new Vector4(SeedOffset(53), SeedOffset(59), 0f, 0f));
+            new Vector4(SeedOffset(53), SeedOffset(59), SeedOffset(67), SeedOffset(71)));
     }
 
     private Material GetDefaultIslandMaterial()

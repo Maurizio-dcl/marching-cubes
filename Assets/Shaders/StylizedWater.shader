@@ -8,12 +8,12 @@ Shader "Custom/Stylized Water"
         _DepthFadeDistance ("DepthFadeDistance", Float) = 2.8
         _DepthBlendSmoothness ("DepthBlendSmoothness", Range(0, 1)) = 0.65
         _DepthBlendPower ("DepthBlendPower", Float) = 1.2
-        _ShorelineColor ("ShorelineColor", Color) = (0.92, 0.98, 0.91, 1)
-        _ShorelineDistance ("ShorelineDistance", Float) = 1.25
-        _ShorelineIntensity ("ShorelineIntensity", Range(0, 1)) = 0.9
-        _ShorelineAnimationStrength ("ShorelineAnimationStrength", Range(0, 1)) = 0.25
-        _ShorelineAnimationScale ("ShorelineAnimationScale", Float) = 2.5
-        _ShorelineAnimationSpeed ("ShorelineAnimationSpeed", Float) = 0.35
+        _PixelNoiseResolution ("Pixel Noise Resolution", Float) = 32
+        _PixelNoiseStrength ("Pixel Noise Strength", Range(0, 1)) = 0.16
+        _WaterCellSize ("Water Cell Size", Float) = 0.25
+        _WaterGridOrigin ("Water Grid Origin", Vector) = (0, 0, 0, 0)
+        _WaterfallScrollSpeed ("Waterfall Scroll Speed", Float) = 1.4
+        _WaterfallAlpha ("Waterfall Alpha", Range(0, 1)) = 0.82
         _RefractionStrength ("RefractionStrength", Range(0, 1)) = 0.12
         _RefractionScale ("RefractionScale", Float) = 0.55
         _RefractionSpeed ("RefractionSpeed", Float) = 0.08
@@ -33,7 +33,7 @@ Shader "Custom/Stylized Water"
             Tags { "LightMode" = "UniversalForward" }
             Blend SrcAlpha OneMinusSrcAlpha
             ZWrite Off
-            Cull Back
+            Cull Off
 
             HLSLPROGRAM
             #pragma vertex vert
@@ -52,12 +52,12 @@ Shader "Custom/Stylized Water"
                 half _DepthFadeDistance;
                 half _DepthBlendSmoothness;
                 half _DepthBlendPower;
-                half4 _ShorelineColor;
-                half _ShorelineDistance;
-                half _ShorelineIntensity;
-                half _ShorelineAnimationStrength;
-                half _ShorelineAnimationScale;
-                half _ShorelineAnimationSpeed;
+                half _PixelNoiseResolution;
+                half _PixelNoiseStrength;
+                half _WaterCellSize;
+                float4 _WaterGridOrigin;
+                half _WaterfallScrollSpeed;
+                half _WaterfallAlpha;
                 half _RefractionStrength;
                 half _RefractionScale;
                 half _RefractionSpeed;
@@ -66,6 +66,9 @@ Shader "Custom/Stylized Water"
             struct Attributes
             {
                 float4 positionOS : POSITION;
+                float3 normalOS : NORMAL;
+                float2 uv : TEXCOORD0;
+                float2 waterData : TEXCOORD2;
             };
 
             struct Varyings
@@ -73,6 +76,9 @@ Shader "Custom/Stylized Water"
                 float4 positionHCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
                 float4 screenPosition : TEXCOORD1;
+                float3 normalWS : TEXCOORD2;
+                float2 uv : TEXCOORD3;
+                float2 waterData : TEXCOORD4;
             };
 
             Varyings vert(Attributes input)
@@ -82,7 +88,36 @@ Shader "Custom/Stylized Water"
                 output.positionHCS = positionInputs.positionCS;
                 output.positionWS = positionInputs.positionWS;
                 output.screenPosition = ComputeScreenPos(output.positionHCS);
+                output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+                output.uv = input.uv;
+                output.waterData = input.waterData;
                 return output;
+            }
+
+            float PixelHash(float2 p)
+            {
+                p = frac(p * float2(0.1031, 0.11369));
+                p += dot(p, p.yx + 19.19);
+                return frac((p.x + p.y) * p.x);
+            }
+
+            float PixelNoise(float2 position)
+            {
+                float resolution = max(_PixelNoiseResolution, 1.0);
+                float2 cell = floor(position * resolution);
+                return PixelHash(cell) * 2.0 - 1.0;
+            }
+
+            float2 WaterCellPixelCoord(float2 worldXZ)
+            {
+                float cellSize = max(_WaterCellSize, 0.0001);
+                return (worldXZ - _WaterGridOrigin.xz) / cellSize;
+            }
+
+            half3 ApplyPixelNoise(half3 color, float2 position)
+            {
+                float noise = PixelNoise(position);
+                return color * (1.0h + noise * _PixelNoiseStrength);
             }
 
             float SampleRawDepth(float2 screenUV)
@@ -109,6 +144,15 @@ Shader "Custom/Stylized Water"
 
             half4 frag(Varyings input) : SV_Target
             {
+                float normalUp = abs(normalize(input.normalWS).y);
+
+                if (normalUp < 0.5)
+                {
+                    float2 waterfallNoisePosition = float2(input.uv.x, input.uv.y / max(_WaterCellSize, 0.0001) - _Time.y * _WaterfallScrollSpeed);
+                    half3 waterfallColor = ApplyPixelNoise(lerp(_ShallowColor.rgb, _DeepColor.rgb, 0.45h), waterfallNoisePosition);
+                    return half4(waterfallColor, _WaterfallAlpha);
+                }
+
                 float2 screenUV = input.screenPosition.xy / max(input.screenPosition.w, 0.0001);
                 float rawDepth = SampleRawDepth(screenUV);
                 float sceneEyeDepth = LinearEyeDepth(rawDepth, _ZBufferParams);
@@ -130,16 +174,9 @@ Shader "Custom/Stylized Water"
 
                 half3 sceneColor = SampleSceneColor(refractedUV);
                 half3 waterColor = lerp(_ShallowColor.rgb, _DeepColor.rgb, depth01);
-                float shorelineDistance = max(_ShorelineDistance, 0.0001);
-                float shorelineWave = sin(dot(input.positionWS.xz, float2(0.73, 1.17)) * _ShorelineAnimationScale
-                    + _Time.y * _ShorelineAnimationSpeed * 6.28318);
-                float shorelinePulse = 0.75 + shorelineWave * 0.25;
-                float animatedShorelineDistance = shorelineDistance
-                    * lerp(1.0, 0.85 + shorelinePulse * 0.35, saturate(_ShorelineAnimationStrength));
-                float shoreline = 1.0 - smoothstep(0.0, animatedShorelineDistance, waterDepth);
-                shoreline *= lerp(1.0, shorelinePulse, saturate(_ShorelineAnimationStrength));
+                float2 waterNoiseUV = WaterCellPixelCoord(input.positionWS.xz);
+                waterColor = ApplyPixelNoise(waterColor, waterNoiseUV);
                 half3 color = lerp(sceneColor, waterColor, saturate(_Transparency));
-                color = lerp(color, _ShorelineColor.rgb, saturate(shoreline * _ShorelineIntensity));
 
                 return half4(color, 1.0h);
             }

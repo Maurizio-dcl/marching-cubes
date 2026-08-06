@@ -126,7 +126,9 @@ namespace DefaultNamespace.Water
         {
             if (!_grid.Contains(targetX, targetZ))
             {
-                return 0f;
+                float edgeFlow = Mathf.Min(maxFlow, _grid.WaterDepths[index] * flowRate * deltaTime);
+                _requestedFlows[index * DirectionCount + direction] = edgeFlow;
+                return edgeFlow;
             }
 
             int targetIndex = _grid.Index(targetX, targetZ);
@@ -193,7 +195,8 @@ namespace DefaultNamespace.Water
                 return;
             }
 
-            float y = _grid.GroundHeights[_grid.Index(sourceX, sourceZ)];
+            int sourceIndex = _grid.Index(sourceX, sourceZ);
+            float y = _grid.GroundHeights[sourceIndex] + _grid.WaterDepths[sourceIndex];
             _outflows[_outflowCount++] = new WaterOutflow
             {
                 Position = _grid.CellCenterWorld(sourceX, sourceZ, y),

@@ -8,12 +8,16 @@ namespace DefaultNamespace.Water
     public sealed class WaterSimulation : MonoBehaviour
     {
         private const string WaterChunkPrefix = "Water Chunk ";
+        private const string WaterfallObjectName = "Waterfalls";
+        private static readonly int WaterCellSizeId = Shader.PropertyToID("_WaterCellSize");
+        private static readonly int WaterGridOriginId = Shader.PropertyToID("_WaterGridOrigin");
 
         [SerializeField] private WaterSimulationSettings settings = new();
         [SerializeField] private Material waterMaterial;
         [SerializeField] private MonoBehaviour outflowConsumerComponent;
 
         private readonly List<WaterSource> _sources = new();
+        private readonly List<WaterfallSource> _waterfallSources = new();
         private WaterGrid _grid;
         private WaterGroundSampler _groundSampler;
         private WaterFlowSolver _flowSolver;
@@ -22,8 +26,15 @@ namespace DefaultNamespace.Water
         private ITerrainDensityField _terrain;
         private IWaterOutflowConsumer _outflowConsumer;
         private WaterOutflow[] _worldOutflows;
+        private GameObject _waterfallObject;
+        private Mesh _waterfallMesh;
+        private MaterialPropertyBlock _waterPropertyBlock;
         private Material _defaultMaterial;
         private float _accumulator;
+        private readonly List<Vector3> _waterfallVertices = new();
+        private readonly List<Vector3> _waterfallNormals = new();
+        private readonly List<Vector2> _waterfallUvs = new();
+        private readonly List<int> _waterfallIndices = new();
 
         public WaterGrid Grid => _grid;
 
@@ -37,6 +48,10 @@ namespace DefaultNamespace.Water
             _chunks = null;
             _terrain = null;
             _worldOutflows = null;
+            _waterfallObject = null;
+            _waterfallMesh = null;
+            _waterPropertyBlock = null;
+            _waterfallSources.Clear();
             _accumulator = 0f;
         }
 
@@ -79,10 +94,13 @@ namespace DefaultNamespace.Water
             _worldOutflows = new WaterOutflow[_grid.ChunksPerAxis * _grid.ChunksPerAxis * 8];
 
             CreateChunks();
+            CreateWaterfallRenderer();
             _groundSampler.RecalculateAll();
             WaterLakeInitializer.Initialize(_grid, _terrain.WorldBounds, lakes, rivers);
+            BuildRiverWaterfallSources(rivers);
             MarkAllChunksDirtyAndActive();
             RebuildDirtyMeshes();
+            UpdateWaterfalls(null, 0);
         }
 
         public void SetChunkRuntimeState(
@@ -220,6 +238,7 @@ namespace DefaultNamespace.Water
             {
                 if (!TryGetActiveCellRect(out int minX, out int maxX, out int minZ, out int maxZ))
                 {
+                    UpdateWaterfalls(null, 0);
                     break;
                 }
 
@@ -231,6 +250,8 @@ namespace DefaultNamespace.Water
                         ConvertOutflowsToWorld(_flowSolver.Outflows, _flowSolver.OutflowCount),
                         _flowSolver.OutflowCount);
                 }
+
+                UpdateWaterfalls(_flowSolver.Outflows, _flowSolver.OutflowCount);
             }
 
             if (changed || _sources.Count > 0)
@@ -336,12 +357,175 @@ namespace DefaultNamespace.Water
                     MeshRenderer meshRenderer = chunkObject.AddComponent<MeshRenderer>();
                     meshFilter.sharedMesh = mesh;
                     meshRenderer.sharedMaterial = material;
+                    ApplyWaterRenderProperties(meshRenderer);
 
                     chunk.Mesh = mesh;
                     chunk.MeshFilter = meshFilter;
                     chunk.MeshRenderer = meshRenderer;
                     _chunks[x + z * _grid.ChunksPerAxis] = chunk;
                 }
+            }
+        }
+
+        private void CreateWaterfallRenderer()
+        {
+            Material material = waterMaterial != null ? waterMaterial : GetDefaultWaterMaterial();
+            _waterfallObject = new GameObject(WaterfallObjectName);
+            _waterfallObject.transform.SetParent(transform, false);
+            _waterfallObject.transform.localPosition = Vector3.zero;
+            _waterfallObject.transform.localRotation = Quaternion.identity;
+            _waterfallObject.transform.localScale = Vector3.one;
+            MeshFilter meshFilter = _waterfallObject.AddComponent<MeshFilter>();
+            MeshRenderer meshRenderer = _waterfallObject.AddComponent<MeshRenderer>();
+            _waterfallMesh = new Mesh { name = WaterfallObjectName };
+            meshFilter.sharedMesh = _waterfallMesh;
+            meshRenderer.sharedMaterial = material;
+            ApplyWaterRenderProperties(meshRenderer);
+        }
+
+        private void ApplyWaterRenderProperties(Renderer renderer)
+        {
+            if (renderer == null || _grid == null)
+            {
+                return;
+            }
+
+            _waterPropertyBlock ??= new MaterialPropertyBlock();
+            Vector3 worldGridOrigin = transform.TransformPoint(_grid.WorldBounds.min);
+            float worldCellSizeX = transform.TransformVector(new Vector3(_grid.CellSize, 0f, 0f)).magnitude;
+            float worldCellSizeZ = transform.TransformVector(new Vector3(0f, 0f, _grid.CellSize)).magnitude;
+            float worldCellSize = Mathf.Max(0.0001f, (worldCellSizeX + worldCellSizeZ) * 0.5f);
+            renderer.GetPropertyBlock(_waterPropertyBlock);
+            _waterPropertyBlock.SetFloat(WaterCellSizeId, worldCellSize);
+            _waterPropertyBlock.SetVector(
+                WaterGridOriginId,
+                new Vector4(worldGridOrigin.x, 0f, worldGridOrigin.z, 0f));
+            renderer.SetPropertyBlock(_waterPropertyBlock);
+            _waterPropertyBlock.Clear();
+        }
+
+        private void UpdateWaterfalls(WaterOutflow[] outflows, int count)
+        {
+            if (_waterfallMesh == null)
+            {
+                return;
+            }
+
+            _waterfallVertices.Clear();
+            _waterfallNormals.Clear();
+            _waterfallUvs.Clear();
+            _waterfallIndices.Clear();
+
+            if ((outflows == null || count <= 0) && _waterfallSources.Count == 0)
+            {
+                _waterfallMesh.Clear();
+                return;
+            }
+
+            int maxQuads = Mathf.Max(0, settings.maxWaterfallQuads);
+            float minimumOutflow = Mathf.Max(0f, settings.waterfallMinimumOutflow);
+            float dropHeight = Mathf.Max(0f, settings.waterfallDropHeight);
+            float baseWidth = Mathf.Max(0.001f, settings.waterfallWidth);
+            int quadCount = 0;
+
+            for (int i = 0; i < _waterfallSources.Count && quadCount < maxQuads; i++)
+            {
+                WaterfallSource source = _waterfallSources[i];
+
+                if (source.Direction.sqrMagnitude <= 0.000001f)
+                {
+                    continue;
+                }
+
+                AddWaterfallQuad(source.Position, source.Direction, Mathf.Max(baseWidth, source.Width), dropHeight, 1f);
+                quadCount++;
+            }
+
+            for (int i = 0; outflows != null && i < count && quadCount < maxQuads; i++)
+            {
+                WaterOutflow outflow = outflows[i];
+
+                if (outflow.Amount < minimumOutflow || outflow.Direction.sqrMagnitude <= 0.000001f)
+                {
+                    continue;
+                }
+
+                AddWaterfallQuad(outflow.Position, outflow.Direction, baseWidth, dropHeight, outflow.Amount);
+                quadCount++;
+            }
+
+            _waterfallMesh.Clear();
+
+            if (_waterfallIndices.Count == 0)
+            {
+                return;
+            }
+
+            _waterfallMesh.indexFormat = _waterfallVertices.Count > 65535
+                ? UnityEngine.Rendering.IndexFormat.UInt32
+                : UnityEngine.Rendering.IndexFormat.UInt16;
+            _waterfallMesh.SetVertices(_waterfallVertices);
+            _waterfallMesh.SetNormals(_waterfallNormals);
+            _waterfallMesh.SetUVs(0, _waterfallUvs);
+            _waterfallMesh.SetTriangles(_waterfallIndices, 0);
+            _waterfallMesh.RecalculateBounds();
+        }
+
+        private void AddWaterfallQuad(Vector3 position, Vector2 direction2D, float baseWidth, float dropHeight, float amount)
+        {
+            direction2D.Normalize();
+            Vector3 direction = new(direction2D.x, 0f, direction2D.y);
+            Vector3 tangent = new(-direction.z, 0f, direction.x);
+            float width = baseWidth * Mathf.Lerp(0.75f, 1.5f, Mathf.Clamp01(amount));
+            Vector3 centerTop = position + direction * (_grid.CellSize * 0.45f);
+            Vector3 centerBottom = centerTop + Vector3.down * dropHeight + direction * (_grid.CellSize * 0.35f);
+            Vector3 halfWidth = tangent * (width * 0.5f);
+            int start = _waterfallVertices.Count;
+
+            _waterfallVertices.Add(centerTop - halfWidth);
+            _waterfallVertices.Add(centerTop + halfWidth);
+            _waterfallVertices.Add(centerBottom - halfWidth);
+            _waterfallVertices.Add(centerBottom + halfWidth);
+
+            for (int i = 0; i < 4; i++)
+            {
+                _waterfallNormals.Add(direction);
+            }
+
+            _waterfallUvs.Add(new Vector2(0f, 0f));
+            _waterfallUvs.Add(new Vector2(1f, 0f));
+            _waterfallUvs.Add(new Vector2(0f, dropHeight));
+            _waterfallUvs.Add(new Vector2(1f, dropHeight));
+
+            _waterfallIndices.Add(start);
+            _waterfallIndices.Add(start + 2);
+            _waterfallIndices.Add(start + 1);
+            _waterfallIndices.Add(start + 1);
+            _waterfallIndices.Add(start + 2);
+            _waterfallIndices.Add(start + 3);
+        }
+
+        private void BuildRiverWaterfallSources(IReadOnlyList<RiverWaterBody> rivers)
+        {
+            _waterfallSources.Clear();
+
+            if (rivers == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < rivers.Count; i++)
+            {
+                RiverWaterBody river = rivers[i];
+                Vector2 direction = river.EndWorldXZ - river.StartWorldXZ;
+
+                if (direction.sqrMagnitude <= 0.000001f)
+                {
+                    continue;
+                }
+
+                Vector3 position = new(river.EndWorldXZ.x, river.EndSurfaceHeight, river.EndWorldXZ.y);
+                _waterfallSources.Add(new WaterfallSource(position, direction.normalized, Mathf.Max(_grid.CellSize, river.Width)));
             }
         }
 
@@ -555,12 +739,12 @@ namespace DefaultNamespace.Water
             material.SetFloat("_DepthFadeDistance", 2.8f);
             material.SetFloat("_DepthBlendSmoothness", 0.65f);
             material.SetFloat("_DepthBlendPower", 1.2f);
-            material.SetColor("_ShorelineColor", new Color(0.92f, 0.98f, 0.91f, 1f));
-            material.SetFloat("_ShorelineDistance", 1.25f);
-            material.SetFloat("_ShorelineIntensity", 0.9f);
-            material.SetFloat("_ShorelineAnimationStrength", 0.25f);
-            material.SetFloat("_ShorelineAnimationScale", 2.5f);
-            material.SetFloat("_ShorelineAnimationSpeed", 0.35f);
+            material.SetFloat("_PixelNoiseResolution", 32f);
+            material.SetFloat("_PixelNoiseStrength", 0.16f);
+            material.SetFloat("_WaterCellSize", 0.25f);
+            material.SetVector("_WaterGridOrigin", Vector4.zero);
+            material.SetFloat("_WaterfallScrollSpeed", 1.4f);
+            material.SetFloat("_WaterfallAlpha", 0.82f);
             material.SetFloat("_RefractionStrength", 0.12f);
             material.SetFloat("_RefractionScale", 0.55f);
             material.SetFloat("_RefractionSpeed", 0.08f);
@@ -572,7 +756,8 @@ namespace DefaultNamespace.Water
             {
                 Transform child = transform.GetChild(i);
 
-                if (!child.name.StartsWith(WaterChunkPrefix))
+                if (!child.name.StartsWith(WaterChunkPrefix)
+                    && child.name != WaterfallObjectName)
                 {
                     continue;
                 }

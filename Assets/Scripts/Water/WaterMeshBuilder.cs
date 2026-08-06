@@ -39,27 +39,8 @@ namespace DefaultNamespace.Water
 
             int startX = chunk.Coordinate.x * _grid.CellsPerChunkAxis;
             int startZ = chunk.Coordinate.y * _grid.CellsPerChunkAxis;
-            int vertsPerAxis = _grid.CellsPerChunkAxis + 1;
             float minX = _grid.WorldBounds.min.x;
             float minZ = _grid.WorldBounds.min.z;
-
-            for (int z = 0; z < vertsPerAxis; z++)
-            {
-                for (int x = 0; x < vertsPerAxis; x++)
-                {
-                    int vertexX = startX + x;
-                    int vertexZ = startZ + z;
-                    float worldX = minX + (startX + x) * _grid.CellSize;
-                    float worldZ = minZ + (startZ + z) * _grid.CellSize;
-                    float height = SampleRenderVertex(vertexX, vertexZ, out float waterDepth, out Vector2 flow);
-
-                    _vertices.Add(new Vector3(worldX - chunk.Bounds.min.x, height - chunk.Bounds.min.y, worldZ - chunk.Bounds.min.z));
-                    _normals.Add(Vector3.up);
-                    _uvs.Add(new Vector2(worldX, worldZ) * 0.05f);
-                    _flow.Add(flow);
-                    _waterDepths.Add(new Vector2(waterDepth, 0f));
-                }
-            }
 
             for (int z = 0; z < _grid.CellsPerChunkAxis; z++)
             {
@@ -73,16 +54,7 @@ namespace DefaultNamespace.Water
                         continue;
                     }
 
-                    int a = x + z * vertsPerAxis;
-                    int b = a + 1;
-                    int c = a + vertsPerAxis;
-                    int d = c + 1;
-                    _indices.Add(a);
-                    _indices.Add(c);
-                    _indices.Add(b);
-                    _indices.Add(b);
-                    _indices.Add(c);
-                    _indices.Add(d);
+                    AddCellQuad(chunk, minX, minZ, cellX, cellZ);
                 }
             }
 
@@ -97,6 +69,43 @@ namespace DefaultNamespace.Water
             mesh.SetTriangles(_indices, 0);
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
+        }
+
+        private void AddCellQuad(WaterChunk chunk, float minX, float minZ, int cellX, int cellZ)
+        {
+            float worldX0 = minX + cellX * _grid.CellSize;
+            float worldZ0 = minZ + cellZ * _grid.CellSize;
+            float worldX1 = worldX0 + _grid.CellSize;
+            float worldZ1 = worldZ0 + _grid.CellSize;
+            SampleRenderCell(cellX, cellZ, out float height, out float waterDepth, out Vector2 flow);
+            int start = _vertices.Count;
+
+            AddCellVertex(chunk, worldX0, worldZ0, height, waterDepth, flow);
+            AddCellVertex(chunk, worldX1, worldZ0, height, waterDepth, flow);
+            AddCellVertex(chunk, worldX0, worldZ1, height, waterDepth, flow);
+            AddCellVertex(chunk, worldX1, worldZ1, height, waterDepth, flow);
+
+            _indices.Add(start);
+            _indices.Add(start + 2);
+            _indices.Add(start + 1);
+            _indices.Add(start + 1);
+            _indices.Add(start + 2);
+            _indices.Add(start + 3);
+        }
+
+        private void AddCellVertex(
+            WaterChunk chunk,
+            float worldX,
+            float worldZ,
+            float height,
+            float waterDepth,
+            Vector2 flow)
+        {
+            _vertices.Add(new Vector3(worldX - chunk.Bounds.min.x, height - chunk.Bounds.min.y, worldZ - chunk.Bounds.min.z));
+            _normals.Add(Vector3.up);
+            _uvs.Add(new Vector2(worldX, worldZ));
+            _flow.Add(flow);
+            _waterDepths.Add(new Vector2(waterDepth, 0f));
         }
 
         private bool IsWetCell(int x, int z)
@@ -200,6 +209,36 @@ namespace DefaultNamespace.Water
             waterDepth = 0f;
             flow = Vector2.zero;
             return _grid.GroundHeights[fallbackIndex];
+        }
+
+        private void SampleRenderCell(int x, int z, out float height, out float waterDepth, out Vector2 flow)
+        {
+            int index = _grid.Index(x, z);
+
+            if (_grid.HasGround(index) && _grid.WaterDepths[index] > _settings.renderDepthThreshold)
+            {
+                waterDepth = _grid.WaterDepths[index];
+                flow = _grid.FlowVelocities[index];
+                height = _grid.GroundHeights[index] + waterDepth - _settings.shorelineOverlap;
+                return;
+            }
+
+            float surfaceSum = 0f;
+            Vector2 flowSum = Vector2.zero;
+            int count = 0;
+            int skirtCells = Mathf.Max(0, _settings.shorelineSkirtCells);
+
+            for (int zOffset = -skirtCells; zOffset <= skirtCells; zOffset++)
+            {
+                for (int xOffset = -skirtCells; xOffset <= skirtCells; xOffset++)
+                {
+                    AddNearbyWetCell(x + xOffset, z + zOffset, ref surfaceSum, ref flowSum, ref count);
+                }
+            }
+
+            waterDepth = 0f;
+            flow = count > 0 ? flowSum / count : Vector2.zero;
+            height = count > 0 ? surfaceSum / count - _settings.shorelineOverlap : _grid.GroundHeights[index];
         }
 
         private void AddRenderableCell(

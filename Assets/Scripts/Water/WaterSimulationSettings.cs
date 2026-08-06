@@ -24,5 +24,9 @@ namespace DefaultNamespace.Water
         [Range(0, 2)] public int shorelineSkirtCells = 1;
         [Min(0f)] public float shorelineOverlap = 0.02f;
         [Range(0f, 1f)] public float renderSmoothing = 0.35f;
+        [Min(0f)] public float waterfallDropHeight = 5f;
+        [Min(0.001f)] public float waterfallWidth = 0.75f;
+        [Min(0f)] public float waterfallMinimumOutflow = 0.0005f;
+        [Range(0, 128)] public int maxWaterfallQuads = 48;
     }
 }

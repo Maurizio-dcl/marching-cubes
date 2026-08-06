@@ -119,16 +119,13 @@ Material:
     - _Metallic: 0
     - _OcclusionStrength: 1
     - _Parallax: 0.005
+    - _PixelNoiseResolution: 32
+    - _PixelNoiseStrength: 0.16
     - _QueueOffset: 0
     - _ReceiveShadows: 1
     - _RefractionScale: 2
     - _RefractionSpeed: 0.08
     - _RefractionStrength: 0.5
-    - _ShorelineAnimationScale: 2.5
-    - _ShorelineAnimationSpeed: 0.35
-    - _ShorelineAnimationStrength: 1
-    - _ShorelineDistance: 0.15
-    - _ShorelineIntensity: 0.087
     - _Smoothness: 0.5
     - _SmoothnessTextureChannel: 0
     - _SpecularHighlights: 1
@@ -136,6 +133,9 @@ Material:
     - _SrcBlendAlpha: 1
     - _Surface: 0
     - _Transparency: 0.791
+    - _WaterfallAlpha: 0.82
+    - _WaterfallScrollSpeed: 1.4
+    - _WaterCellSize: 0.25
     - _WorkflowMode: 1
     - _XRMotionVectorsPass: 1
     - _ZWrite: 1
@@ -145,7 +145,7 @@ Material:
     - _DeepColor: {r: 0.08240962, g: 0.122641504, b: 0.0734692, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
     - _ShallowColor: {r: 0.14117648, g: 0.21176471, b: 0.1254902, a: 1}
-    - _ShorelineColor: {r: 0.39607844, g: 0.27058825, b: 0.16078432, a: 1}
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
+    - _WaterGridOrigin: {r: 0, g: 0, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

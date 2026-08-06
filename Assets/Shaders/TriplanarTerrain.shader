@@ -54,6 +54,7 @@ Shader "Custom/Triplanar Terrain"
             SAMPLER(sampler_DownTex);
 
             #define MAX_TERRAIN_WATER_BODIES 16
+            #define MAX_TERRAIN_WATER_RIVERS 16
 
             CBUFFER_START(UnityPerMaterial)
                 half4 _Color;
@@ -68,6 +69,10 @@ Shader "Custom/Triplanar Terrain"
                 int _TerrainWaterBodyCount;
                 float4 _TerrainWaterBodies[MAX_TERRAIN_WATER_BODIES];
                 float4 _TerrainWaterBodyShapeData[MAX_TERRAIN_WATER_BODIES];
+                int _TerrainWaterRiverCount;
+                float4 _TerrainWaterRivers[MAX_TERRAIN_WATER_RIVERS];
+                float4 _TerrainWaterRiverData[MAX_TERRAIN_WATER_RIVERS];
+                float4 _TerrainWaterRiverShapeData[MAX_TERRAIN_WATER_RIVERS];
                 float4x4 _TerrainWaterWorldToIsland;
                 float4 _TerrainWaterIslandCenter;
                 float4 _TerrainWaterNoiseSeedOffsets;
@@ -255,7 +260,7 @@ Shader "Custom/Triplanar Terrain"
 
             half WaterTopMask(float3 positionWS)
             {
-                if (_TerrainWaterBodyCount <= 0)
+                if (_TerrainWaterBodyCount <= 0 && _TerrainWaterRiverCount <= 0)
                 {
                     return 0.0h;
                 }
@@ -289,6 +294,37 @@ Shader "Custom/Triplanar Terrain"
                     half bodyMask = step(footprintSignedDistance + distanceBoundaryOffset, 0.0)
                         * step(shoreSignedDistance + distanceBoundaryOffset, 0.0);
                     mask = max(mask, bodyMask);
+                }
+
+                int riverCount = min(_TerrainWaterRiverCount, MAX_TERRAIN_WATER_RIVERS);
+
+                [loop]
+                for (int i = 0; i < riverCount; i++)
+                {
+                    float4 river = _TerrainWaterRivers[i];
+                    float4 riverData = _TerrainWaterRiverData[i];
+                    float4 riverShape = _TerrainWaterRiverShapeData[i];
+                    float2 start = river.xy;
+                    float2 end = river.zw;
+                    float2 segment = end - start;
+                    float lengthSqr = max(dot(segment, segment), 0.000001);
+                    float riverT = saturate(dot(islandLocalXZ - start, segment) / lengthSqr);
+                    float2 center = lerp(start, end, riverT);
+
+                    if (riverShape.x > 0.0 && riverShape.y > 0.0)
+                    {
+                        float2 normal = normalize(float2(-segment.y, segment.x));
+                        float2 noisePosition = (center + _TerrainWaterNoiseSeedOffsets.zw) * riverShape.x;
+                        float meander = TerrainPerlinSampleSigned(noisePosition.x, 0.0, noisePosition.y);
+                        center += normal * (meander * riverData.x * riverShape.y);
+                    }
+
+                    float footprintSignedDistance = distance(islandLocalXZ, center) - max(riverData.x, 0.001);
+                    float surfaceY = lerp(riverData.y, riverData.z, riverT);
+                    float shoreSignedDistance = maskPositionWS.y - (surfaceY + max(_WaterTopShoreWidth, 0.0h));
+                    half riverMask = step(footprintSignedDistance + distanceBoundaryOffset, 0.0)
+                        * step(shoreSignedDistance + distanceBoundaryOffset, 0.0);
+                    mask = max(mask, riverMask);
                 }
 
                 return mask;
@@ -348,7 +384,7 @@ Shader "Custom/Triplanar Terrain"
                     -normalWS.y + boundaryOffset);
 
                 half4 upColor = LoadUpTexel(input.positionWS);
-                if (_TerrainWaterBodyCount > 0)
+                if (_TerrainWaterBodyCount > 0 || _TerrainWaterRiverCount > 0)
                 {
                     half waterTopMask = WaterTopMask(input.positionWS);
                     half4 waterTopColor = LoadWaterTopTexel(input.positionWS);
