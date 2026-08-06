@@ -44,11 +44,12 @@ namespace DefaultNamespace.Water
             ITerrainDensityField terrain,
             int chunksPerAxis,
             float chunkWorldSize,
-            IReadOnlyList<LakeWaterBody> lakes)
+            IReadOnlyList<LakeWaterBody> lakes,
+            IReadOnlyList<RiverWaterBody> rivers)
         {
             using (IslandProfiler.WaterInitialize.Auto())
             {
-                InitializeInternal(terrain, chunksPerAxis, chunkWorldSize, lakes);
+                InitializeInternal(terrain, chunksPerAxis, chunkWorldSize, lakes, rivers);
             }
         }
 
@@ -56,7 +57,8 @@ namespace DefaultNamespace.Water
             ITerrainDensityField terrain,
             int chunksPerAxis,
             float chunkWorldSize,
-            IReadOnlyList<LakeWaterBody> lakes)
+            IReadOnlyList<LakeWaterBody> lakes,
+            IReadOnlyList<RiverWaterBody> rivers)
         {
             _terrain = terrain;
             _outflowConsumer = outflowConsumerComponent as IWaterOutflowConsumer;
@@ -78,7 +80,7 @@ namespace DefaultNamespace.Water
 
             CreateChunks();
             _groundSampler.RecalculateAll();
-            WaterLakeInitializer.Initialize(_grid, _terrain.WorldBounds, lakes);
+            WaterLakeInitializer.Initialize(_grid, _terrain.WorldBounds, lakes, rivers);
             MarkAllChunksDirtyAndActive();
             RebuildDirtyMeshes();
         }

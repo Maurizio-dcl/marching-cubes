@@ -45,4 +45,39 @@ namespace DefaultNamespace.Water
         public float ShoreWidth { get; }
         public float SurfaceHeight { get; }
     }
+
+    public readonly struct RiverWaterBody
+    {
+        public RiverWaterBody(
+            Vector2 startWorldXZ,
+            Vector2 endWorldXZ,
+            float width,
+            float startSurfaceHeight,
+            float endSurfaceHeight,
+            Vector2 noiseOriginWorldXZ,
+            Vector2 noiseSeedOffsets,
+            float meanderFrequency,
+            float meanderStrength)
+        {
+            StartWorldXZ = startWorldXZ;
+            EndWorldXZ = endWorldXZ;
+            Width = width;
+            StartSurfaceHeight = startSurfaceHeight;
+            EndSurfaceHeight = endSurfaceHeight;
+            NoiseOriginWorldXZ = noiseOriginWorldXZ;
+            NoiseSeedOffsets = noiseSeedOffsets;
+            MeanderFrequency = meanderFrequency;
+            MeanderStrength = meanderStrength;
+        }
+
+        public Vector2 StartWorldXZ { get; }
+        public Vector2 EndWorldXZ { get; }
+        public float Width { get; }
+        public float StartSurfaceHeight { get; }
+        public float EndSurfaceHeight { get; }
+        public Vector2 NoiseOriginWorldXZ { get; }
+        public Vector2 NoiseSeedOffsets { get; }
+        public float MeanderFrequency { get; }
+        public float MeanderStrength { get; }
+    }
 }
