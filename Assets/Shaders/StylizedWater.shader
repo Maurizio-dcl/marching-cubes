@@ -68,6 +68,7 @@ Shader "Custom/Stylized Water"
                 float4 positionOS : POSITION;
                 float3 normalOS : NORMAL;
                 float2 uv : TEXCOORD0;
+                float2 flowData : TEXCOORD1;
                 float2 waterData : TEXCOORD2;
             };
 
@@ -79,6 +80,7 @@ Shader "Custom/Stylized Water"
                 float3 normalWS : TEXCOORD2;
                 float2 uv : TEXCOORD3;
                 float2 waterData : TEXCOORD4;
+                float2 flowData : TEXCOORD5;
             };
 
             Varyings vert(Attributes input)
@@ -91,6 +93,7 @@ Shader "Custom/Stylized Water"
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 output.uv = input.uv;
                 output.waterData = input.waterData;
+                output.flowData = input.flowData;
                 return output;
             }
 
@@ -148,16 +151,14 @@ Shader "Custom/Stylized Water"
 
                 if (normalUp < 0.5)
                 {
-                    float2 waterfallNoisePosition = float2(input.uv.x, input.uv.y / max(_WaterCellSize, 0.0001) - _Time.y * _WaterfallScrollSpeed);
+                    float2 waterfallNoisePosition = float2(input.uv.x, input.uv.y / max(_WaterCellSize, 0.0001) + _Time.y * _WaterfallScrollSpeed);
                     half3 waterfallColor = ApplyPixelNoise(lerp(_ShallowColor.rgb, _DeepColor.rgb, 0.45h), waterfallNoisePosition);
                     return half4(waterfallColor, _WaterfallAlpha);
                 }
 
                 float2 screenUV = input.screenPosition.xy / max(input.screenPosition.w, 0.0001);
-                float rawDepth = SampleRawDepth(screenUV);
-                float sceneEyeDepth = LinearEyeDepth(rawDepth, _ZBufferParams);
                 float surfaceEyeDepth = LinearEyeDepth(input.positionHCS.z, _ZBufferParams);
-                float waterDepth = max(0.0, sceneEyeDepth - surfaceEyeDepth);
+                float waterDepth = max(0.0, input.waterData.x);
                 float rawDepth01 = saturate(waterDepth / max(_DepthFadeDistance, 0.0001));
                 float smoothDepth01 = rawDepth01 * rawDepth01 * (3.0 - 2.0 * rawDepth01);
                 float depth01 = lerp(rawDepth01, smoothDepth01, saturate(_DepthBlendSmoothness));
@@ -174,7 +175,8 @@ Shader "Custom/Stylized Water"
 
                 half3 sceneColor = SampleSceneColor(refractedUV);
                 half3 waterColor = lerp(_ShallowColor.rgb, _DeepColor.rgb, depth01);
-                float2 waterNoiseUV = WaterCellPixelCoord(input.positionWS.xz);
+                float2 flowOffset = input.flowData * _Time.y * 0.65;
+                float2 waterNoiseUV = WaterCellPixelCoord(input.positionWS.xz + flowOffset);
                 waterColor = ApplyPixelNoise(waterColor, waterNoiseUV);
                 half3 color = lerp(sceneColor, waterColor, saturate(_Transparency));
 

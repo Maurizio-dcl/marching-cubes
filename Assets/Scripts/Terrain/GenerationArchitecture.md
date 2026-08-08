@@ -1,28 +1,30 @@
-# Terrain and Water Generation Architecture
+# Terrain Generation Architecture
 
 ## Runtime Ownership
 
-`IslandGenerator` is the scene-facing island orchestrator. It owns authoring configuration, island-local feature settings, generated chunk runtime records, and the high-level desired state for terrain and water chunks.
+`IslandGenerator` is the scene-facing island orchestrator. It owns authoring configuration, island-local shape settings, generated chunk runtime records, and the high-level desired state for terrain chunks.
 
 `TerrainChunkRuntimeData` owns per-chunk runtime state: stable island chunk ID, world bounds, current and desired LOD, dirty bounds, visibility state, CPU density samples, and generated mesh reference.
 
-`TerrainChunkView` owns Unity-facing rendering components for one terrain chunk. It does not evaluate density, select LOD, or run water simulation.
+`TerrainChunkView` owns Unity-facing rendering components for one terrain chunk. It does not evaluate density or select LOD.
 
-Water state remains in `WaterGrid` as flat contiguous arrays for ground height, depth, next-depth, flow velocity, and flags. `WaterChunk` now stores chunk runtime gates and throttling state, while `WaterSimulation` bridges Unity lifecycle to `WaterGroundSampler`, `WaterFlowSolver`, and `WaterMeshBuilder`.
+## Island Density Model
+
+The island keeps the existing top-down footprint and underside profile as the primary silhouette controls.
+
+The top surface is intentionally simple: base height, broad top noise, organic low-frequency height variation, optional fine detail, edge drop, and underside noise. Overhangs come from a small 3D density offset masked near the upper rim. That keeps most of the island readable as the same floating-island shape while giving Marching Cubes non-heightfield work at the edges.
+
+The old authored/random terrain feature stack, lakes, rivers, and water simulation have been removed. Regeneration clears legacy generated water chunk children so old scene previews disappear on the next island rebuild.
 
 ## Scheduling and Dirty Regions
 
-Terrain changes should call `IslandGenerator.NotifyTerrainModified(Bounds)`. The island expands the bounds by one terrain sample, marks only intersecting chunks dirty, queues them in `IslandWorkScheduler`, and notifies `WaterSimulation.NotifyTerrainChanged`.
+Terrain changes should call `IslandGenerator.NotifyTerrainModified(Bounds)`. The island expands the bounds by one terrain sample, marks only intersecting chunks dirty, and queues them in `IslandWorkScheduler`.
 
 The scheduler prioritizes modified chunks first, then visible chunks, then LOD-transition chunks, then distance. Runtime chunk rebuilds are capped by `maxChunkBuildsPerFrame`.
 
-Water terrain resampling is bounded by the changed world bounds. Water mesh rebuilding respects per-chunk render gates and mesh update intervals.
-
 ## LOD and Visibility
 
-LOD is configured by `TerrainLodLevel[]`; the number of levels is not hard-coded. Each level declares terrain sample resolution, water sample resolution intent, mesh/simulation frequency, water activity, water rendering, collision intent, and shadow intent.
-
-`TerrainLodSelector` evaluates distance, camera frustum, behind-camera state, recent visibility, and active modification state. Recent visibility avoids rapid cull/rebuild churn near frustum edges. Hysteresis uses separate enter and exit distances.
+LOD is configured by `TerrainLodLevel[]`; the number of levels is not hard-coded. Each level declares terrain sample resolution, mesh update frequency, collision intent, and shadow intent.
 
 The current seam strategy is conservative: LOD levels should use sample densities that divide the highest terrain density so edge sample positions remain compatible in world space, and neighbour LOD differences should be kept small by distance thresholds. This does not yet generate explicit transition cells or skirts, so aggressive adjacent LOD differences can still show cracks on high-curvature surfaces. Add skirts or transition cells before using large LOD deltas in close view.
 
@@ -34,22 +36,15 @@ The existing grass path remains compute-driven because its generated blades stay
 
 A full terrain GPU path should move density evaluation, case classification, vertex emission, normal generation, and rendering/indirect draw preparation together so normal gameplay does not require synchronous readback. Keep the CPU path for editor diagnostics and unsupported hardware.
 
-Water simulation remains CPU-side because gameplay sampling, terrain-change coupling, and current mesh rendering all consume CPU data. Move it to compute only if downstream water rendering and gameplay queries can avoid frequent GPU-to-CPU transfers.
-
 ## Profiling Markers
 
 Major stages are marked in `IslandProfiler`:
 
 - `Island.Refresh`
-- `Island.GenerateFeatures`
 - `Island.GenerateChunks`
 - `Island.BuildChunk`
 - `Island.MeshExtraction`
 - `Island.LODUpdate`
 - `Island.DirtyTerrain`
-- `Water.Initialize`
-- `Water.GroundSample`
-- `Water.Simulate`
-- `Water.MeshBuild`
 
-Use the Unity Profiler in Play Mode with allocation recording enabled to measure chunk rebuilds, LOD transitions, water terrain resampling, simulation, and mesh upload behavior.
+Use the Unity Profiler in Play Mode with allocation recording enabled to measure chunk rebuilds and LOD transitions.

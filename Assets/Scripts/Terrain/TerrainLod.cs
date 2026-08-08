@@ -9,31 +9,23 @@ namespace DefaultNamespace.Terrain
         [Min(0f)] public float enterDistance = 24f;
         [Min(0f)] public float exitDistance = 28f;
         [Range(1, 64)] public int terrainCellsPerAxis = 16;
-        [Range(1, 128)] public int waterCellsPerTerrainChunkAxis = 32;
         [Min(1)] public int meshUpdateIntervalFrames = 1;
-        [Min(1)] public int simulationIntervalFrames = 1;
         public bool generateCollision;
-        public bool simulateWater = true;
-        public bool renderWater = true;
         public bool castShadows = true;
     }
 
     public readonly struct TerrainLodDecision
     {
-        public TerrainLodDecision(int lod, bool render, bool simulateWater, bool renderWater, bool visible, float distance)
+        public TerrainLodDecision(int lod, bool render, bool visible, float distance)
         {
             Lod = lod;
             Render = render;
-            SimulateWater = simulateWater;
-            RenderWater = renderWater;
             Visible = visible;
             Distance = distance;
         }
 
         public int Lod { get; }
         public bool Render { get; }
-        public bool SimulateWater { get; }
-        public bool RenderWater { get; }
         public bool Visible { get; }
         public float Distance { get; }
     }
@@ -78,10 +70,9 @@ namespace DefaultNamespace.Terrain
             bool visible = inFrustum && !behindCamera;
             bool recent = visible || currentFrame - chunk.LastVisibleFrame <= _recentVisibilityFrames;
             int lod = SelectLod(chunk.CurrentLod, distance, chunk.IsBeingModified);
-            TerrainLodLevel level = GetLevel(lod);
             bool render = visible || recent || chunk.IsBeingModified;
 
-            return new TerrainLodDecision(lod, render, level.simulateWater || chunk.IsBeingModified, level.renderWater && render, visible, distance);
+            return new TerrainLodDecision(lod, render, visible, distance);
         }
 
         private int SelectLod(int currentLod, float distance, bool forceHighResolution)

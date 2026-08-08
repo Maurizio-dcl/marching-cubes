@@ -7,7 +7,7 @@ Shader "Custom/Triplanar Terrain"
         _WaterTopTex ("Water Top Texture", 2D) = "white" {}
         _SideTex ("Side Texture", 2D) = "white" {}
         _DownTex ("Down Texture", 2D) = "white" {}
-        _UseDownTexture ("Use Down Texture", Range(0, 1)) = 0
+        [HideInInspector] _UseDownTexture ("Use Down Texture", Range(0, 1)) = 0
         _TextureScale ("Texture Scale", Float) = 1
         _TriplanarSharpness ("Triplanar Sharpness", Range(1, 8)) = 4
         _SlopeThreshold ("Slope Threshold", Range(0, 1)) = 0.55
@@ -450,5 +450,6 @@ Shader "Custom/Triplanar Terrain"
         }
     }
 
+    CustomEditor "TriplanarTerrainShaderGUI"
     Fallback "Universal Render Pipeline/Lit"
 }
